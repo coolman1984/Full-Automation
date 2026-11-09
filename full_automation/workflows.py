@@ -16,6 +16,9 @@ from .history import RunHistory
 from .validation import check_schema
 
 TOKEN = re.compile(r"\$\{([^{}]+)\}")
+# Observations that do not change the device and add nothing to a replay.
+RECORDING_NOISE = {"browser_tabs","browser_screenshot","browser_events","desktop_windows","desktop_screenshot",
+                   "transcript_list","transcript_read","file_inspect"}
 READ_ONLY = {"browser_tabs","browser_snapshot","desktop_windows","desktop_snapshot","system_status","file_wait","file_inspect"}
 CONTROL = {"workflow_save","workflow_run","workflow_start","workflow_record_start","workflow_record_stop","workflow_import_recording","workflow_export","schedule_create","schedule_remove","agent_start","agent_stop","recording_start","recording_stop","workflow_cancel","system_stop","system_resume","browser_demo_start","browser_demo_read","browser_demo_stop"}
 
@@ -116,7 +119,7 @@ def validate(definition, tools):
     return definition
 
 
-COMPARISONS = ("equals", "contains")
+COMPARISONS = ("equals", "not_equals", "contains", "not_contains", "matches", "greater_than", "less_than")
 
 
 def check_condition(spec, where):
@@ -131,6 +134,103 @@ def check_condition(spec, where):
         raise AutomationError(where + " must use only one of: " + ", ".join(COMPARISONS) + ".")
     if "label" in spec and not isinstance(spec["label"], str):
         raise AutomationError(where + " label must be a string.")
+    pattern = spec.get("matches")
+    if "matches" in spec and not (isinstance(pattern, str) and TOKEN.fullmatch(pattern)):
+        if not isinstance(pattern, str) or len(pattern) > 1000:
+            raise AutomationError(where + " matches must be a regular expression string of at most 1000 characters.")
+        try:
+            re.compile(pattern)
+        except re.error as exc:
+            raise AutomationError(where + " matches is not a valid regular expression: " + str(exc)) from exc
+    for key in ("greater_than", "less_than"):
+        value = spec.get(key)
+        if key in spec and not (isinstance(value, str) and TOKEN.fullmatch(value)) and (
+                isinstance(value, bool) or not isinstance(value, (int, float)) or not math.isfinite(value)):
+            raise AutomationError(where + " " + key + " must be a finite number.")
+
+
+def number(value, label):
+    if isinstance(value, bool):
+        raise AutomationError(label + " is not a number.")
+    if isinstance(value, (int, float)) and math.isfinite(value):
+        return value
+    try:
+        parsed = float(str(value).strip().replace(",", ""))
+    except ValueError:
+        raise AutomationError(label + " is not a number: " + str(value)[:80]) from None
+    if not math.isfinite(parsed):
+        raise AutomationError(label + " is not a finite number.")
+    return parsed
+
+
+def condition(spec):
+    actual = spec.get("actual")
+    if "equals" in spec:
+        return actual == spec["equals"]
+    if "not_equals" in spec:
+        return actual != spec["not_equals"]
+    if "contains" in spec or "not_contains" in spec:
+        needle = spec.get("contains", spec.get("not_contains"))
+        if not isinstance(actual, (str, list, dict)):
+            raise AutomationError("contains needs text, a list or an object as actual.")
+        found = needle in actual if not isinstance(actual, str) else str(needle) in actual
+        return found if "contains" in spec else not found
+    if "matches" in spec:
+        if not isinstance(actual, str):
+            raise AutomationError("matches needs text as actual.")
+        return re.search(spec["matches"], actual) is not None
+    if "greater_than" in spec:
+        return number(actual, "actual") > number(spec["greater_than"], "greater_than")
+    if "less_than" in spec:
+        return number(actual, "actual") < number(spec["less_than"], "less_than")
+    return bool(actual)
+
+
+def input_name(selector, used, fallback):
+    """A readable input name from the field's selector, such as #customer or input[name="pin"]."""
+    if isinstance(selector, list) and selector:
+        selector = selector[-1]
+    source = ""
+    if isinstance(selector, dict):
+        source = selector.get("name") or selector.get("id") or ""
+    elif isinstance(selector, str):
+        match = re.search(r"(?:#|\[(?:name|id|aria-label|data-testid)=[\"']?)([A-Za-z][\w-]*)", selector)
+        source = match.group(1) if match else ""
+    base = re.sub(r"[^A-Za-z0-9]+", "_", str(source)).strip("_").lower()[:40]
+    if not base or not re.match(r"[a-z_]", base):
+        base = fallback
+    name, index = base, 2
+    while name in used:
+        name, index = f"{base}_{index}", index + 1
+    return name
+
+
+CHORD = re.compile(r"(?:(?:CTRL|ALT|SHIFT|WIN)\+)*[A-Za-z][A-Za-z0-9]{0,15}")
+# Their effect depends on state the recorder does not keep (the clipboard) or reaches outside the window.
+UNSAFE_CHORDS = {"CTRL+C", "CTRL+V", "CTRL+X", "SHIFT+INSERT", "CTRL+INSERT", "SHIFT+DELETE", "ALT+F4", "ALT+TAB"}
+
+
+def shortcut_step(step, target):
+    chord = str(step.get("Value", ""))
+    upper = chord.upper()
+    if not CHORD.fullmatch(chord) or upper.startswith("WIN+") or "+WIN+" in upper or upper in UNSAFE_CHORDS:
+        reason = "it uses the clipboard, Windows key or switches windows" if chord else "the key was not recorded"
+        return {"tool":"manual","description":(step.get("Description") or "Keyboard shortcut")+" — not replayed because "+reason+"."}
+    keys = chord.split("+")
+    window = {"title":target["Window"],"path":target["AppPath"]}
+    if target.get("Id") or target.get("Name"):
+        # Put keyboard focus back on the control the person used before pressing the key.
+        return [{"tool":"desktop_action","args":{"selector":desktop_selector(target),"action":"focus"}},
+                {"tool":"desktop_keys","args":{"keys":keys,"window":window}}]
+    if not any(k.upper() in {"CTRL","ALT"} for k in keys[:-1]):
+        # Enter, Delete, arrows and similar act on whatever control has focus; without a locator that is a guess.
+        return {"tool":"manual","description":(step.get("Description") or "Key")+" — not replayed because the focused control has no stable identifier."}
+    return {"tool":"desktop_keys","args":{"keys":keys,"window":window}}
+
+
+def desktop_selector(target):
+    return {"window":{"title":target["Window"],"path":target["AppPath"]},"id":target["Id"],"name":target["Name"],
+            "class_name":target["Class"],"control_type":target["ControlType"],"parent_id":target["ParentId"]}
 
 
 def walk_steps(steps, prefix=""):
@@ -281,13 +381,6 @@ class Workflows:
             if time.monotonic() > deadline:
                 raise AutomationError("Workflow exceeded its deadline.")
 
-        def condition(spec):
-            if "equals" in spec:
-                return spec.get("actual") == spec["equals"]
-            if "contains" in spec:
-                return spec["contains"] in spec.get("actual", [])
-            return bool(spec.get("actual"))
-
         def dispatch(tool, args):
             if tool == "wait":
                 seconds = args.get("seconds", 1)
@@ -351,8 +444,11 @@ class Workflows:
                             except Exception:
                                 if attempts > retries:
                                     raise
-                                check()
-                                time.sleep(0.2)
+                                # Back off 0.5 s, 1 s, 2 s so a slow page or app can settle; stop and cancel stay responsive.
+                                resume = time.monotonic() + min(0.5 * 2 ** (attempts - 1), 5)
+                                while time.monotonic() < resume:
+                                    check()
+                                    time.sleep(min(0.1, max(0, resume - time.monotonic())))
                         if "save_as" in step:
                             context[step["save_as"]] = result
                             outputs[step["save_as"]] = result
@@ -390,10 +486,12 @@ class Workflows:
         self.recording={"version":1,"name":slug(name),"required_inputs":[],"steps":[]}
         self.parameterize=bool(parameterize_inputs)
         self.aliases={}
+        self.examples={}
         return {"recording":name}
 
     def capture(self,tool,args,result):
-        if self.recording is None or tool in CONTROL or tool.startswith(("workflow_","schedule_","agent_","system_","recording_")):
+        if (self.recording is None or tool in CONTROL or tool in RECORDING_NOISE
+                or tool.startswith(("workflow_","schedule_","agent_","system_","recording_"))):
             return
         params=copy.deepcopy(args)
         if tool.startswith("browser_") and tool not in {"browser_launch", "browser_connect"}:
@@ -406,21 +504,30 @@ class Workflows:
                 params["target_id"]=self.aliases[target]
             else:
                 name="target_"+str(len(required)+1)
+                while name in self._reserved():
+                    name+="_id"
                 required.append(name)
                 params["target_id"]="${"+name+"}"
                 self.aliases[target]=params["target_id"]
         if self.parameterize:
             for key in ("text","value"):
                 if key in params:
-                    name="input_"+str(len(required)+1)
+                    name=input_name(params.get("selector"),self._reserved(),"input_"+str(len(required)+1))
                     required.append(name)
+                    self.examples[name]=params[key]
                     params[key]="${"+name+"}"
         step={"tool":tool,"args":params}
         if tool=="browser_new_tab" and isinstance(result,dict) and "targetId" in result:
             name="tab_"+str(len(self.recording["steps"])+1)
+            while name in self._reserved():
+                name+="_tab"
             step["save_as"]=name
             self.aliases[result["targetId"]]="${"+name+".targetId}"
         self.recording["steps"].append(step)
+
+    def _reserved(self):
+        """Input names and result aliases share one namespace in a workflow context."""
+        return set(self.recording["required_inputs"])|{step["save_as"] for step in self.recording["steps"] if "save_as" in step}
 
     def record_stop(self):
         if self.recording is None:
@@ -428,17 +535,23 @@ class Workflows:
         definition=self.recording
         result=self.save(definition)
         self.recording=None
-        return {**result,"definition":definition}
+        # Example values are returned for a test replay and are not written to the workflow file.
+        examples,self.examples=self.examples,{}
+        return {**result,"definition":definition,"example_inputs":examples}
 
     def import_recording(self,path,name):
         recorded=self.engine.desktop.call("record_export",{"path":path})
         definition={"version":1,"name":slug(name),"required_inputs":[],"steps":[]}
         for step in recorded["Steps"]:
             target=step.get("Target")
+            if step.get("Kind")=="key" and target:
+                converted=shortcut_step(step,target)
+                definition["steps"].extend(converted if isinstance(converted,list) else [converted])
+                continue
             if not step.get("Replayable") or not target:
                 definition["steps"].append({"tool":"manual","description":step.get("Description","Unrecognized action")})
                 continue
-            selector={"window":{"title":target["Window"],"path":target["AppPath"]},"id":target["Id"],"name":target["Name"],"class_name":target["Class"],"control_type":target["ControlType"],"parent_id":target["ParentId"]}
+            selector=desktop_selector(target)
             if step["Kind"]=="click":
                 action="invoke" if step["Pattern"]=="invoke" else "select"
                 definition["steps"].append({"tool":"desktop_action","args":{"selector":selector,"action":action}})
@@ -457,6 +570,7 @@ class Workflows:
                 +"sys.path.insert(0, "+repr(str(ROOT))+")\nfrom full_automation.engine import Engine\n"
                 +"definition=json.loads("+repr(json.dumps(definition,ensure_ascii=False))+")\n"
                 +"variables=json.loads(sys.argv[1]) if len(sys.argv)>1 else {}\n"
-                +"with Engine("+repr(str(self.engine.data))+") as engine:\n    print(json.dumps(engine.workflows.run_definition(definition, variables),ensure_ascii=False))\n")
+                +"# The embedded definition must still match the digest it was exported with.\n"
+                +"with Engine("+repr(str(self.engine.data))+") as engine:\n    print(json.dumps(engine.workflows.run_definition(definition, variables, "+repr(digest(definition))+"),ensure_ascii=False))\n")
         path.write_text(source,encoding="utf-8")
         return {"path":str(path),"sha256":digest(definition)}

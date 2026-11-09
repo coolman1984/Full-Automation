@@ -9,7 +9,7 @@ A version 1 definition contains a safe file name in `name`, a nonempty `steps` a
 | `tool` | A registered action or one of the workflow operations below |
 | `args` | Arguments passed to the action |
 | `save_as` | Result name for later steps and returned outputs |
-| `retries` | Integer from zero to three. Potential writes require explicit `idempotent: true` to retry |
+| `retries` | Integer from zero to three. Attempts wait 0.5, 1 and 2 seconds apart, still honoring stop and cancel. Potential writes require explicit `idempotent: true` to retry |
 | `idempotent` | A declaration that repeating the action has the same intended effect. Verify this property in the app before using it |
 
 A complete placeholder preserves the referenced JSON value type. A placeholder within text inserts its string representation. Reference a previous result using a dotted path such as `${tab.targetId}` or an explicitly supplied value such as `${report_date}`. Resolve `${env:NAME}` from the current process environment. Keep secrets out of recipe files and scheduler inputs.
@@ -17,7 +17,7 @@ A complete placeholder preserves the referenced JSON value type. A placeholder w
 | Operation | Fields and behavior |
 |---|---|
 | `wait` | Only `args.seconds`, from zero to 120. Checks stop and cancellation while waiting |
-| `assert` | Required `args.actual` plus at most one of `equals` or `contains`; with neither, `actual` must be truthy. Optional string `label` identifies the evidence expected. Any other field is rejected on save, so a misspelled comparison cannot pass as a truthiness check |
+| `assert` | Required `args.actual` plus at most one of `equals`, `not_equals`, `contains`, `not_contains`, `matches` (a regular expression searched in text), `greater_than` or `less_than` (numbers, or text such as `1,250`); with none, `actual` must be truthy. A comparison that cannot apply, such as `matches` on a number, fails the step. Optional string `label` identifies the evidence expected. Any other field is rejected on save, so a misspelled comparison cannot pass as a truthiness check |
 | `if` | `condition` uses the same strict comparison fields. Execute `then` or `else` |
 | `foreach` | `items` is a list or variable. Bind each item under `as` and execute nested `steps` |
 | `manual` | A review barrier preserved from demonstrations. Every branch is checked before replay or scheduling |

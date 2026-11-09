@@ -166,7 +166,114 @@ class EngineTest(unittest.TestCase):
         self.assertNotIn("private-input",raw)
         self.assertNotIn("old-runtime-id",raw)
         self.assertEqual(result["definition"]["steps"][1]["args"]["target_id"],"${tab_1.targetId}")
-        self.assertEqual(result["definition"]["required_inputs"],["input_1"])
+        self.assertEqual(result["definition"]["required_inputs"],["name"])
+        self.assertEqual(result["example_inputs"],{"name":"private-input"})
+
+    def test_recording_names_inputs_and_skips_observations(self):
+        self.engine.workflows.record_start("names")
+        for tool,args in (("browser_tabs",{}),("browser_screenshot",{"target_id":"t"}),
+                          ("browser_fill",{"target_id":"t","selector":"#customer","text":"a"}),
+                          ("browser_fill",{"target_id":"t","selector":["#host","input[name=\"customer\"]"],"text":"b"}),
+                          ("browser_select",{"target_id":"t","selector":"div > select","value":"x"})):
+            self.engine.workflows.capture(tool,args,{})
+        result=self.engine.workflows.record_stop()
+        self.assertEqual([s["tool"] for s in result["definition"]["steps"]],["browser_fill","browser_fill","browser_select"])
+        self.assertEqual(result["definition"]["required_inputs"],["target_1","customer","customer_2","input_4"])
+
+    def test_extended_comparisons(self):
+        passing=[{"actual":"Total: 1,250 EGP","matches":"Total: [\\d,]+"},{"actual":"1,250","greater_than":1000},
+                 {"actual":3,"less_than":"${limit}"},{"actual":"ok","not_equals":"error"},{"actual":["a"],"not_contains":"b"}]
+        steps=[{"tool":"assert","args":args} for args in passing]
+        self.assertEqual(self.engine.workflows.run_definition(self.recipe(steps),{"limit":4})["status"],"completed")
+        for args in ({"actual":"x","matches":"("},{"actual":1,"greater_than":"many"},{"actual":1,"less_than":True}):
+            with self.subTest(args=args),self.assertRaises(AutomationError):
+                self.engine.workflows.save(self.recipe([{"tool":"assert","args":args}]))
+        for args in ({"actual":"abc","greater_than":1},{"actual":5,"matches":"5"},{"actual":"999","less_than":10}):
+            with self.subTest(args=args),self.assertRaises(AutomationError):
+                self.engine.workflows.run_definition(self.recipe([{"tool":"assert","args":args}]))
+
+    def test_retries_back_off_between_attempts(self):
+        stamps=[]
+        def unstable(value):
+            stamps.append(time.monotonic())
+            if len(stamps)<3: raise AutomationError("not yet")
+            return {"value":value}
+        self.engine.add("unstable","test backoff",unstable,True)
+        self.engine.workflows.run_definition(self.recipe([{"tool":"unstable","args":{"value":1},"retries":2,"idempotent":True}]))
+        self.assertGreaterEqual(stamps[1]-stamps[0],0.45)
+        self.assertGreaterEqual(stamps[2]-stamps[1],0.95)
+
+    def test_exported_script_refuses_an_edited_definition(self):
+        self.engine.workflows.save(self.recipe([{"tool":"wait","args":{"seconds":0}}]))
+        path=Path(self.engine.workflows.export("test")["path"])
+        source=path.read_text(encoding="utf-8").replace('"seconds": 0','"seconds": 1')
+        self.assertIn('"seconds": 1',source)
+        path.write_text(source,encoding="utf-8")
+        run=subprocess.run([sys.executable,str(path)],capture_output=True,text=True,timeout=20)
+        self.assertNotEqual(run.returncode,0)
+        self.assertIn("changed",run.stderr)
+
+    def test_history_prune_keeps_recent_and_running(self):
+        history=self.engine.workflows.history
+        for run_id,age,status in (("old",40,"completed"),("recent",1,"failed"),("stuck",40,"running")):
+            history.start(run_id,"test","x")
+            history.step(run_id,1,"1","echo","completed",1,1,None)
+            with history.database() as db:
+                db.execute("UPDATE runs SET started_at=?,status=? WHERE run_id=?",(time.time()-age*86400,status,run_id))
+        self.assertEqual(self.engine.call("workflow_history_prune",{"older_than_days":30})["deleted_runs"],1)
+        self.assertEqual({r["run_id"] for r in history.list()},{"recent","stuck"})
+        with self.assertRaises(AutomationError): history.info("old")
+        with self.assertRaises(AutomationError): self.engine.call("workflow_history_prune",{"older_than_days":0})
+
+    def test_journal_rotates_and_keeps_three_files(self):
+        from full_automation.common import Journal
+        journal=Journal(self.data/"logs/rotate.jsonl")
+        journal.MAX_BYTES=200
+        for index in range(60):
+            journal.add({"tool":"x","index":index})
+        files=sorted(p.name for p in (self.data/"logs").glob("rotate*"))
+        self.assertEqual(files,["rotate.1.jsonl","rotate.2.jsonl","rotate.3.jsonl","rotate.jsonl"])
+        self.assertTrue(all(p.stat().st_size<400 for p in (self.data/"logs").glob("rotate*")))
+
+    def test_tool_inputs_are_described_for_agents(self):
+        schema=self.engine.tools["browser_fill"].schema["properties"]
+        self.assertIn("shadow",schema["selector"]["description"])
+        self.assertIn("description",schema["target_id"])
+
+    def test_recorded_shortcuts_replay_except_clipboard_and_system_keys(self):
+        target={"Window":"Report - Notepad","AppPath":"C:\\Windows\\notepad.exe","Id":"","Name":"","Class":"","ControlType":0,"ParentId":""}
+        session={"Steps":[{"Kind":"key","Value":"CTRL+S","Target":target,"Replayable":False,"Description":"Ctrl+S"},
+                          {"Kind":"key","Value":"CTRL+V","Target":target,"Replayable":False,"Description":"Ctrl+V"},
+                          {"Kind":"key","Value":"WIN+R","Target":target,"Replayable":False,"Description":"Win+R"},
+                          {"Kind":"key","Value":"","Target":target,"Replayable":False,"Description":"older recorder"},
+                          {"Kind":"key","Value":"CTRL+Return","Target":target,"Replayable":False,"Description":"Ctrl+Enter"}]}
+        with patch.object(self.engine.desktop,"call",return_value=session):
+            steps=self.engine.workflows.import_recording("unused.wos","shortcuts")["definition"]["steps"]
+        self.assertEqual(steps[0],{"tool":"desktop_keys","args":{"keys":["CTRL","S"],"window":{"title":"Report - Notepad","path":"C:\\Windows\\notepad.exe"}}})
+        self.assertEqual([s["tool"] for s in steps],["desktop_keys","manual","manual","manual","desktop_keys"])
+        field={**target,"Id":"amount","Name":"Amount"}
+        session={"Steps":[{"Kind":"key","Value":"Return","Target":field,"Replayable":False,"Description":"Enter"},
+                          {"Kind":"key","Value":"Delete","Target":target,"Replayable":False,"Description":"Delete"}]}
+        with patch.object(self.engine.desktop,"call",return_value=session):
+            steps=self.engine.workflows.import_recording("unused.wos","control-keys")["definition"]["steps"]
+        self.assertEqual(steps[0]["tool"],"desktop_action")
+        self.assertEqual((steps[0]["args"]["action"],steps[0]["args"]["selector"]["id"]),("focus","amount"))
+        self.assertEqual(steps[1]["args"]["keys"],["Return"])
+        self.assertEqual(steps[2]["tool"],"manual",
+                         "a control key without a control locator could act on the wrong control")
+
+    def test_recorded_input_names_never_shadow_result_aliases(self):
+        self.engine.workflows.record_start("aliases")
+        self.engine.workflows.capture("browser_new_tab",{},{"targetId":"t1"})
+        self.engine.workflows.capture("browser_fill",{"target_id":"t1","selector":"#tab_1","text":"x"},{})
+        self.engine.workflows.capture("browser_fill",{"target_id":"t1","selector":"#tab_3","text":"y"},{})
+        self.engine.workflows.capture("browser_new_tab",{},{"targetId":"t2"})
+        definition=self.engine.workflows.record_stop()["definition"]
+        aliases=[s["save_as"] for s in definition["steps"] if "save_as" in s]
+        self.assertFalse(set(aliases)&set(definition["required_inputs"]),(aliases,definition["required_inputs"]))
+        from full_automation.demo import convert
+        demo,_,_=convert("demo","about:blank","http://127.0.0.1:9222",[{"kind":"fill","selector":"#tab","name":"tab","value":"v","time":1}])
+        self.assertNotIn("tab",demo["required_inputs"])
 
     def test_unknown_tool_and_arguments_fail(self):
         with self.assertRaises(AutomationError): self.engine.call("does_not_exist")

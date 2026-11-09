@@ -76,9 +76,25 @@ def redact(value):
 
 
 class Journal:
+    MAX_BYTES = 10 * 1024 * 1024
+    KEEP = 3
+
     def __init__(self, path: Path):
         self.path = path
         self.lock = threading.Lock()
+
+    def _rotate(self):
+        # actions.jsonl -> actions.1.jsonl -> ... -> actions.3.jsonl; the oldest is dropped.
+        try:
+            if self.path.stat().st_size < self.MAX_BYTES:
+                return
+        except FileNotFoundError:
+            return
+        for index in range(self.KEEP, 0, -1):
+            older = self.path.with_name(f"{self.path.stem}.{index}{self.path.suffix}")
+            newer = self.path if index == 1 else self.path.with_name(f"{self.path.stem}.{index-1}{self.path.suffix}")
+            if newer.exists():
+                os.replace(newer, older)
 
     def add(self, event: dict):
         record = {"time": time.time(), **redact(event)}
@@ -86,6 +102,7 @@ class Journal:
         encoded = json.dumps(record, ensure_ascii=False, allow_nan=False)
         with self.lock:
             self.path.parent.mkdir(parents=True, exist_ok=True)
+            self._rotate()
             with self.path.open("a", encoding="utf-8") as file:
                 file.write(encoded + "\n")
 

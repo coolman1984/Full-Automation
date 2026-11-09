@@ -193,8 +193,17 @@ class CDPConnection:
         self.ws.close()
 
 
-LOCATE = """(selector) => {
+LOCATE = """(selector, frames) => {
  let root=document, element;
+ for (const frame of (frames||[])) {
+   const owners=root.querySelectorAll(frame);
+   if(owners.length!==1) throw new Error('Expected one frame for '+frame+', found '+owners.length);
+   if(!owners[0].matches('iframe,frame')) throw new Error('Not a frame: '+frame);
+   let inner=null;
+   try { inner=owners[0].contentDocument; } catch(e) {}
+   if(!inner) throw new Error('Frame '+frame+' is cross-origin or not loaded; it cannot be reached from this page');
+   root=inner;
+ }
  for (const part of (Array.isArray(selector)?selector:[selector])) {
    if (!root) throw new Error('Shadow root is not accessible');
    const found=root.querySelectorAll(part);
@@ -203,6 +212,19 @@ LOCATE = """(selector) => {
  }
  if(!element) throw new Error('Empty selector');
  return element;
+}"""
+
+# Viewport offset of the innermost frame's content box, after bringing each frame into view.
+FRAME_OFFSET = """(frames) => {
+ let root=document, x=0, y=0;
+ for (const frame of (frames||[])) {
+   const owner=root.querySelector(frame);
+   owner.scrollIntoView({block:'center',inline:'center'});
+   const r=owner.getBoundingClientRect(), style=owner.ownerDocument.defaultView.getComputedStyle(owner);
+   x+=r.left+owner.clientLeft+parseFloat(style.paddingLeft); y+=r.top+owner.clientTop+parseFloat(style.paddingTop);
+   root=owner.contentDocument;
+ }
+ return {x,y};
 }"""
 
 SNAPSHOT = r"""() => {
@@ -360,28 +382,37 @@ class Browser:
             result["frame_tree"]=self.call("Page.getFrameTree",target_id=target_id)
         return result
 
-    def _element(self,target_id,selector,body):
-        code="((el)=>{"+body+"})(("+LOCATE+")("+json.dumps(selector,ensure_ascii=False)+"))"
+    @staticmethod
+    def _frames(frame):
+        if frame is None:
+            return []
+        if not isinstance(frame,list) or not 1<=len(frame)<=8 or not all(isinstance(f,str) and f for f in frame):
+            raise AutomationError("frame must be a list of 1-8 iframe CSS selectors, outermost first.")
+        return frame
+
+    def _element(self,target_id,selector,body,frame=None):
+        frames=json.dumps(self._frames(frame),ensure_ascii=False)
+        code=("((el,frames)=>{"+body+"})(("+LOCATE+")("+json.dumps(selector,ensure_ascii=False)+","+frames+"),"+frames+")")
         return self.evaluate(target_id,code)
 
-    def click(self,target_id,selector,button="left",count=1):
+    def click(self,target_id,selector,button="left",count=1,frame=None):
         if button not in {"left","right","middle"} or count not in {1,2}:
             raise AutomationError("Invalid click options.")
-        position=self._element(target_id,selector,"if(el.disabled)throw new Error('Element disabled');el.scrollIntoView({block:'center',inline:'center'});const r=el.getBoundingClientRect();if(!r.width||!r.height)throw new Error('Element hidden');const x=r.x+r.width/2,y=r.y+r.height/2;const hit=el.getRootNode().elementFromPoint(x,y);if(hit!==el&&!el.contains(hit))throw new Error('Element is covered');return {x,y};")
+        position=self._element(target_id,selector,"if(el.disabled)throw new Error('Element disabled');el.scrollIntoView({block:'center',inline:'center'});const offset=("+FRAME_OFFSET+")(frames);const r=el.getBoundingClientRect();if(!r.width||!r.height)throw new Error('Element hidden');const x=r.x+r.width/2,y=r.y+r.height/2;const hit=el.getRootNode().elementFromPoint(x,y);if(hit!==el&&!el.contains(hit))throw new Error('Element is covered');const X=x+offset.x,Y=y+offset.y;if(frames.length){const top=document.elementFromPoint(X,Y);if(!top||!top.matches('iframe,frame'))throw new Error('Frame is covered or outside the viewport');}return {x:X,y:Y};",frame)
         for click_count in range(1,count+1):
             self.call("Input.dispatchMouseEvent",{"type":"mousePressed","button":button,"clickCount":click_count,**position},target_id)
             self.call("Input.dispatchMouseEvent",{"type":"mouseReleased","button":button,"clickCount":click_count,**position},target_id)
         return {"clicked":selector}
 
-    def fill(self,target_id,selector,text):
+    def fill(self,target_id,selector,text,frame=None):
         if not isinstance(text,str):
             raise AutomationError("Text must be a string.")
-        self._element(target_id,selector,"if(el.disabled||el.readOnly)throw new Error('Field not editable');if(!el.matches('input,textarea,[contenteditable=true]')||el.matches('input[type=file],input[type=button],input[type=submit],input[type=reset],input[type=checkbox],input[type=radio]'))throw new Error('Not a text field');const r=el.getBoundingClientRect();if(!r.width||!r.height||getComputedStyle(el).visibility==='hidden')throw new Error('Field hidden');el.scrollIntoView({block:'center',behavior:'instant'});el.focus();if(el.getRootNode().activeElement!==el)throw new Error('Focus failed');if(el.select)el.select();else {const s=getSelection(),range=document.createRange();range.selectNodeContents(el);s.removeAllRanges();s.addRange(range);}return true;")
+        self._element(target_id,selector,"if(el.disabled||el.readOnly)throw new Error('Field not editable');if(!el.matches('input,textarea,[contenteditable=true]')||el.matches('input[type=file],input[type=button],input[type=submit],input[type=reset],input[type=checkbox],input[type=radio]'))throw new Error('Not a text field');const view=el.ownerDocument.defaultView;const r=el.getBoundingClientRect();if(!r.width||!r.height||view.getComputedStyle(el).visibility==='hidden')throw new Error('Field hidden');("+FRAME_OFFSET+")(frames);el.scrollIntoView({block:'center',behavior:'instant'});el.focus();if(el.getRootNode().activeElement!==el)throw new Error('Focus failed');if(frames.length&&!document.activeElement.matches('iframe,frame'))throw new Error('Frame did not receive focus');if(el.select)el.select();else {const s=view.getSelection(),range=el.ownerDocument.createRange();range.selectNodeContents(el);s.removeAllRanges();s.addRange(range);}return true;",frame)
         if text:
             self.call("Input.insertText",{"text":text},target_id)
         else:
             self.key(target_id,"Backspace")
-        result=self._element(target_id,selector,"return {matches:(el.value??el.textContent)==="+json.dumps(text,ensure_ascii=False)+",protected:el.matches('input[type=password]')};")
+        result=self._element(target_id,selector,"return {matches:(el.value??el.textContent)==="+json.dumps(text,ensure_ascii=False)+",protected:el.matches('input[type=password]')};",frame)
         if not result["matches"]:
             raise AutomationError("Field contents did not match after typing.")
         return {"verified":True,"protected":result["protected"]}
@@ -396,8 +427,8 @@ class Browser:
         self.call("Input.dispatchKeyEvent",{"type":"keyUp",**args},target_id)
         return {"sent":key}
 
-    def select(self,target_id,selector,value):
-        return self._element(target_id,selector,"if(!el.matches('select')||el.disabled)throw new Error('Not an enabled select');const value="+json.dumps(value)+";if(!Array.from(el.options).some(o=>o.value===value))throw new Error('Option missing');el.value=value;el.dispatchEvent(new Event('input',{bubbles:true}));el.dispatchEvent(new Event('change',{bubbles:true}));return {value:el.value};")
+    def select(self,target_id,selector,value,frame=None):
+        return self._element(target_id,selector,"if(!el.matches('select')||el.disabled)throw new Error('Not an enabled select');const value="+json.dumps(value)+";if(!Array.from(el.options).some(o=>o.value===value))throw new Error('Option missing');el.value=value;el.dispatchEvent(new Event('input',{bubbles:true}));el.dispatchEvent(new Event('change',{bubbles:true}));return {value:el.value};",frame)
 
     def scroll(self,target_id,x=0,y=600):
         self.call("Input.dispatchMouseEvent",{"type":"mouseWheel","x":100,"y":100,"deltaX":x,"deltaY":y},target_id)
@@ -407,11 +438,11 @@ class Browser:
         data=self.call("Page.captureScreenshot",{"format":"png","captureBeyondViewport":False},target_id)
         return {"_image":data["data"],"mimeType":"image/png"}
 
-    def upload(self,target_id,selector,files):
+    def upload(self,target_id,selector,files,frame=None):
         paths=[str(Path(p).expanduser().resolve(strict=True)) for p in files]
         if not paths or not all(Path(p).is_file() for p in paths):
             raise AutomationError("Upload requires existing files.")
-        expression="("+LOCATE+")("+json.dumps(selector)+")"
+        expression="("+LOCATE+")("+json.dumps(selector)+","+json.dumps(self._frames(frame))+")"
         response=self.call("Runtime.evaluate",{"expression":expression,"returnByValue":False},target_id)
         if "exceptionDetails" in response or "objectId" not in response.get("result",{}):
             raise AutomationError("File input selector is not unique or unavailable.")
@@ -427,11 +458,11 @@ class Browser:
         self.call("Browser.setDownloadBehavior",{"behavior":"allow","downloadPath":str(path),"eventsEnabled":True})
         return {"directory":str(path)}
 
-    def wait(self,target_id,selector=None,expression=None,timeout=20):
+    def wait(self,target_id,selector=None,expression=None,timeout=20,frame=None):
         if not 0<timeout<=120:
             raise AutomationError("Wait timeout must be in (0,120].")
         if selector is not None:
-            expression="(()=>{try{return !!("+LOCATE+")("+json.dumps(selector)+")}catch{return false}})()"
+            expression="(()=>{try{return !!("+LOCATE+")("+json.dumps(selector)+","+json.dumps(self._frames(frame))+")}catch{return false}})()"
         if not expression:
             raise AutomationError("Supply a selector or expression to wait for.")
         deadline=time.monotonic()+timeout

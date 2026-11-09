@@ -37,13 +37,55 @@ class Tool:
                 "annotations":{"readOnlyHint":not self.mutates,"destructiveHint":self.mutates,"openWorldHint":True}}
 
 
+# Shown to the agent in each tool's input schema.
+PARAMETER_HELP = {
+    "target_id": "Chrome tab ID from browser_tabs or browser_new_tab (targetId).",
+    "selector": "Unique CSS selector. For open shadow roots pass a list: host selector first, then the inner selector.",
+    "frame": "Same-origin iframe selectors from the top document inward, such as [\"#checkout\"]; omit for the top document.",
+    "frame_id": "Frame ID from browser_snapshot frame_tree; omit for the top document.",
+    "endpoint": "Loopback CDP URL with port, such as http://127.0.0.1:9222.",
+    "url": "Address to open.",
+    "text": "Exact text to type; use an empty string to clear the field.",
+    "value": "Value to use.",
+    "expression": "JavaScript expression; it runs in the page and may change it.",
+    "timeout": "Maximum seconds to wait.",
+    "window": "Exact window match from desktop_windows, such as {\"title\": ..., \"path\": ...}.",
+    "keys": "Separate key names pressed together, such as [\"CTRL\", \"S\"].",
+    "name": "Name of 1-80 letters, numbers, dots, underscores or hyphens.",
+    "variables": "Workflow inputs as an object; see workflow_plan for the required names.",
+    "expected_sha256": "Refuse to run unless the workflow still has this digest.",
+    "definition": "Workflow definition with version 1, name and steps.",
+    "path": "Local file path.",
+    "newer_than": "Unix time in seconds; older files are rejected.",
+    "cursor": "Value of next_cursor from the previous call; 0 to start.",
+    "limit": "Maximum items to return.",
+    "session_id": "Managed CLI session ID from agent_start.",
+    "job_id": "Background job ID from workflow_start.",
+    "run_id": "Run receipt ID from workflow_run, workflow_start or workflow_history.",
+    "agent": "CLI profile name such as claude, codex, cline or agy.",
+    "prompt": "Prompt passed to the CLI as one argument.",
+    "cwd": "Working directory for the CLI.",
+    "model": "Model identifier for the CLI; Claude defaults to claude-opus-5-5.",
+    "action": "One of the actions named in the tool description.",
+    "prompt_text": "Text to answer a prompt() dialog with.",
+    "conversation_only": "Return only user and assistant messages and tool names.",
+    "older_than_days": "Age in days; receipts started earlier are deleted.",
+    "pids": "Process IDs of the applications to record.",
+    "at": "Local time HH:MM, or YYYY-MM-DDTHH:MM:SS for once.",
+    "frequency": "daily, weekly or once.",
+    "weekdays": "Full English weekday names for weekly schedules.",
+    "workflow": "Saved workflow name.",
+    "save": "Also save the converted workflow.",
+}
+
+
 def schema_for(handler):
     signature=inspect.signature(handler)
     properties={}
     required=[]
-    arrays={"files","keys","pids","weekdays","arguments"}
+    arrays={"files","keys","pids","weekdays","arguments","frame"}
     objects={"params","window","selector","variables","definition"}
-    numbers={"timeout","x","y","to_x","to_y","seconds","stable_seconds","newer_than"}
+    numbers={"timeout","x","y","to_x","to_y","seconds","stable_seconds","newer_than","older_than_days"}
     integers={"port","count","cursor","limit","modifiers","delta"}
     booleans={"headless","clear","capture_text","screenshots","allow_keyboard","parameterize_inputs","save","with_sha256","conversation_only"}
     for name,param in signature.parameters.items():
@@ -65,6 +107,8 @@ def schema_for(handler):
             kind={"type":"string"}
         if name=="selector" and handler.__module__.endswith("cdp"):
             kind={"anyOf":[{"type":"string"},{"type":"array","items":{"type":"string"}}]}
+        if name in PARAMETER_HELP:
+            kind["description"]=PARAMETER_HELP[name]
         if param.default is inspect.Parameter.empty:
             required.append(name)
         elif param.default is not None:
@@ -106,8 +150,8 @@ class Engine:
             ("browser_new_tab","Create a Chrome tab. Save targetId for subsequent actions.",self.browser.new_tab,True),
             ("browser_navigate","Navigate a tab and wait for document readiness.",self.browser.navigate,True),
             ("browser_snapshot","Read visible text and unique CSS selectors, including open shadow roots. frame_id reads a specific frame.",self.browser.snapshot,False),
-            ("browser_click","Click one unique visible CSS selector with trusted CDP mouse input; top frame or open shadow roots.",self.browser.click,True),
-            ("browser_fill","Replace an editable field and verify its value. Password values are not returned.",self.browser.fill,True),
+            ("browser_click","Click one unique visible CSS selector with trusted CDP mouse input, in the top document, open shadow roots or a same-origin frame (frame).",self.browser.click,True),
+            ("browser_fill","Replace an editable field and verify its value, also inside a same-origin frame (frame). Password values are not returned.",self.browser.fill,True),
             ("browser_key","Send a key; modifier mask: Alt=1 Ctrl=2 Meta=4 Shift=8.",self.browser.key,True),
             ("browser_select","Choose a native select option by value.",self.browser.select,True),
             ("browser_scroll","Scroll the top-frame viewport.",self.browser.scroll,True),
@@ -148,6 +192,7 @@ class Engine:
             ("workflow_status","Read the status and result of an owned background workflow job.",self.workflows.status,False),
             ("workflow_cancel","Request cancellation of one owned background job at a checked boundary.",self.workflows.cancel,True),
             ("workflow_history","List persisted workflow run receipts, optionally by workflow name.",self.workflows.history.list,False),
+            ("workflow_history_prune","Delete finished run receipts older than older_than_days, optionally for one workflow name. Running receipts are kept.",self.workflows.history.prune,True),
             ("workflow_run_info","Read one run receipt and its step metadata using a sequence cursor.",self.workflows.history.info,False),
             ("workflow_record_start","Record this agent's subsequent tool calls as a reusable workflow. Input values are parameterized by default.",self.workflows.record_start,True),
             ("workflow_record_stop","Save the agent action recording as an editable workflow definition.",self.workflows.record_stop,True),
