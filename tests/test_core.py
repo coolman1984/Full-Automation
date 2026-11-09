@@ -297,6 +297,82 @@ class CommonTest(unittest.TestCase):
             with lock: pass
 
 
+class TranscriptDiscoveryTest(unittest.TestCase):
+    def setUp(self):
+        self.temp=tempfile.TemporaryDirectory()
+        self.home=Path(self.temp.name)
+        def lines(path,rows):
+            path.parent.mkdir(parents=True,exist_ok=True)
+            path.write_bytes(("".join(json.dumps(r,ensure_ascii=False)+"\n" for r in rows)).encode())
+            return path
+        self.claude=lines(self.home/".claude/projects/-work-app/s1.jsonl",[
+            {"type":"queue-operation","sessionId":"s1","content":"duplicate prompt"},
+            {"type":"user","sessionId":"s1","cwd":"/work/app","message":{"role":"user","content":"اعمل تقرير المبيعات"},"timestamp":"t1"},
+            {"type":"assistant","sessionId":"s1","message":{"role":"assistant","content":[{"type":"thinking","thinking":"private plan"},{"type":"text","text":"حاضر"},{"type":"tool_use","name":"Bash","id":"x1"}]}},
+            {"type":"user","sessionId":"s1","message":{"role":"user","content":[{"type":"tool_result","tool_use_id":"x1","content":"ok"}]}},
+            {"type":"ai-title","sessionId":"s1","title":"Sales"}])
+        self.codex=lines(self.home/".codex/sessions/2026/11/09/rollout-1.jsonl",[
+            {"timestamp":"t0","type":"session_meta","payload":{"cwd":"/work/codex"}},
+            {"timestamp":"t1","type":"event_msg","payload":{"type":"user_message","message":"fix the test"}},
+            {"timestamp":"t2","type":"response_item","payload":{"type":"reasoning","summary":[{"text":"hidden"}]}},
+            {"timestamp":"t3","type":"response_item","payload":{"type":"function_call","name":"shell","call_id":"c1"}},
+            {"timestamp":"t4","type":"event_msg","payload":{"type":"agent_message","message":"done, token sk-ant-abcdefghijklmnopqrstu"}}])
+        cline=self.home/".cline/data/tasks/42/ui_messages.json";cline.parent.mkdir(parents=True)
+        cline.write_text(json.dumps([{"ts":1,"type":"say","say":"task","text":"rename files"},
+            {"ts":2,"type":"say","say":"api_req_started","text":"{}"},{"ts":3,"type":"say","say":"completion_result","text":"renamed"}]))
+        (self.home/".codex/auth.json").write_text('{"secret":1}')
+        lines(self.home/".claude/projects/-work-app/credentials.jsonl",[{"type":"user","sessionId":"x","message":{"role":"user","content":"no"}}])
+        self.custom=lines(self.home/"agy-logs/chat.jsonl",[{"type":"message","role":"user","content":"agy hello"}])
+        self.env=patch.dict(os.environ,{"CLAUDE_CONFIG_DIR":"","CODEX_HOME":"","APPDATA":str(self.home/"none"),"XDG_CONFIG_HOME":str(self.home/"none")})
+        self.env.start()
+
+    def tearDown(self):
+        self.env.stop();self.temp.cleanup()
+
+    def test_finds_known_conversations_only_with_preview(self):
+        from full_automation.agents import list_transcripts
+        profiles={"agy":{"command":"agy","args":["{prompt}"],"transcripts":[{"root":str(self.home/"agy-logs"),"pattern":"*.jsonl"}]}}
+        result=list_transcripts(profiles,home=self.home)
+        found={row["agent"]:row for row in result["transcripts"]}
+        self.assertEqual(set(found),{"claude","codex","cline","agy"})
+        self.assertEqual(found["claude"]["first_user_message"],"اعمل تقرير المبيعات")
+        self.assertEqual(found["claude"]["cwd"],"/work/app")
+        self.assertEqual(found["codex"]["cwd"],"/work/codex")
+        self.assertEqual(found["cline"]["first_user_message"],"rename files")
+        paths=json.dumps(result)
+        self.assertNotIn("auth.json",paths);self.assertNotIn("credentials",paths)
+        self.assertEqual([r["agent"] for r in list_transcripts(profiles,"codex",home=self.home)["transcripts"]],["codex"])
+        for bad in ({"root":"relative","pattern":"*.jsonl"},{"root":str(self.home),"pattern":"../*.jsonl"},{"root":str(self.home),"pattern":"*.db"}):
+            with self.subTest(bad=bad),self.assertRaises(AutomationError):
+                list_transcripts({"x":{"transcripts":[bad]}},home=self.home)
+
+    def test_conversation_rows_from_each_cli(self):
+        claude=read_transcript(str(self.claude))
+        self.assertEqual([(e["role"],e["text"]) for e in claude["events"]],[("user","اعمل تقرير المبيعات"),("assistant","حاضر")])
+        self.assertEqual(claude["events"][1]["tools"],[{"name":"Bash","id":"x1"}])
+        self.assertNotIn("private plan",json.dumps(claude,ensure_ascii=False))
+        codex=read_transcript(str(self.codex))
+        self.assertEqual([e["role"] for e in codex["events"]],["user","assistant","assistant"])
+        self.assertEqual(codex["events"][1]["tools"][0]["name"],"shell")
+        self.assertNotIn("hidden",json.dumps(codex));self.assertNotIn("sk-ant-",json.dumps(codex))
+        cline=read_transcript(str(self.home/".cline/data/tasks/42/ui_messages.json"))
+        self.assertEqual([(e["role"],e["text"]) for e in cline["events"]],[("user","rename files"),("assistant","renamed")])
+        raw=read_transcript(str(self.claude),conversation_only=False)
+        self.assertEqual(len(raw["events"]),5)
+
+    def test_follow_a_running_conversation_with_cursor(self):
+        first=read_transcript(str(self.codex),limit=1)
+        self.assertTrue(first["has_more"])
+        rest=read_transcript(str(self.codex),cursor=first["next_cursor"])
+        self.assertFalse(rest["has_more"])
+        with self.codex.open("ab") as stream:
+            stream.write((json.dumps({"timestamp":"t5","type":"event_msg","payload":{"type":"user_message","message":"next"}})+"\n").encode())
+            stream.write(b'{"timestamp":"t6","type":')
+        new=read_transcript(str(self.codex),cursor=rest["next_cursor"])
+        self.assertEqual([e["text"] for e in new["events"]],["next"])
+        self.assertTrue(new["has_more"], "a partly written line stays for the next poll")
+
+
 class DemoConversionTest(unittest.TestCase):
     def test_corrections_frames_unknown_targets_and_navigation(self):
         from full_automation.demo import convert

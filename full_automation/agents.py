@@ -9,6 +9,7 @@ import re
 import shutil
 import signal
 import subprocess
+import sys
 import threading
 import time
 import uuid
@@ -66,7 +67,7 @@ def visible_event(value):
         return redact({"type":kind,"role":event.get("role", "assistant"),"text":str(event.get("text", ""))[:200000],"event_type":event.get("type")})
     if isinstance(value.get("payload"), dict):
         return visible_event(value["payload"])
-    text = value.get("text", value.get("result", value.get("error", "")))
+    text = value.get("text", value.get("result", value.get("error", value.get("message") if isinstance(value.get("message"), str) else "")))
     return redact({"type":kind,"role":role,"text":str(text)[:200000],"session_id":value.get("session_id",value.get("thread_id"))})
 
 
@@ -233,6 +234,9 @@ class Agents:
     def list(self):
         return [s.status() for s in self.sessions.values()]
 
+    def transcripts(self,agent=None,limit=20):
+        return list_transcripts(self.profiles,agent,limit)
+
     def close(self):
         for session in self.sessions.values():
             session.stop("server_closed")
@@ -241,19 +245,170 @@ class Agents:
             session.watcher.join(timeout=4)
 
 
-def read_transcript(path,cursor=0,limit=100):
+CREDENTIAL_NAMES = ("auth.json", "credentials", "token", "secret", "oauth", "keychain")
+TRANSCRIPT_SUFFIXES = {".jsonl", ".log", ".txt", ".json"}
+CLINE_ROLES = {"task": "user", "user_feedback": "user", "text": "assistant", "completion_result": "assistant", "followup": "assistant"}
+MAX_TRANSCRIPT_FILES = 5000
+
+
+def _credential_like(path: Path) -> bool:
+    return any(token in path.name.lower() for token in CREDENTIAL_NAMES)
+
+
+def _vscode_storage(home: Path):
+    if os.name == "nt":
+        base = Path(os.environ.get("APPDATA", home / "AppData/Roaming"))
+    elif sys.platform == "darwin":
+        base = home / "Library/Application Support"
+    else:
+        base = Path(os.environ.get("XDG_CONFIG_HOME", home / ".config"))
+    return base / "Code/User/globalStorage/saoudrizwan.claude-dev/tasks"
+
+
+def transcript_roots(profiles=None, home=None):
+    """Known conversation folders only. Login stores in the same parent folders are never matched."""
+    home = Path(home) if home else Path.home()
+    claude = Path(os.environ.get("CLAUDE_CONFIG_DIR") or home / ".claude")
+    codex = Path(os.environ.get("CODEX_HOME") or home / ".codex")
+    roots = [("claude", claude / "projects", "*/*.jsonl"),
+             ("codex", codex / "sessions", "**/rollout-*.jsonl"),
+             ("cline", home / ".cline/data/tasks", "*/ui_messages.json"),
+             ("cline", _vscode_storage(home), "*/ui_messages.json")]
+    for name, profile in (profiles or {}).items():
+        entries = profile.get("transcripts", []) if isinstance(profile, dict) else []
+        if not isinstance(entries, list):
+            raise AutomationError("Profile transcripts must be a list of {root, pattern} objects: " + str(name))
+        for entry in entries:
+            root = Path(str(entry.get("root", ""))).expanduser() if isinstance(entry, dict) else None
+            pattern = entry.get("pattern") if isinstance(entry, dict) else None
+            if (root is None or not root.is_absolute() or not isinstance(pattern, str) or ".." in pattern
+                    or Path(pattern).suffix.lower() not in TRANSCRIPT_SUFFIXES):
+                raise AutomationError("Invalid transcript root or pattern for profile: " + str(name))
+            roots.append((name, root, pattern))
+    return roots
+
+
+def _preview(file: Path):
+    """First visible user message and working folder, read from the start of the file only."""
+    title, cwd = None, None
+    try:
+        if file.suffix.lower() == ".json":
+            if file.stat().st_size > 8_000_000:
+                return None, None
+            rows = read_json(file)
+            rows = rows if isinstance(rows, list) else [rows]
+        else:
+            with file.open("rb") as stream:
+                chunk = stream.read(262144)
+            rows = []
+            for line in chunk.splitlines()[:400]:
+                try:
+                    rows.append(json.loads(line.decode("utf-8-sig", errors="replace")))
+                except ValueError:
+                    continue
+    except (OSError, ValueError, AutomationError):
+        return None, None
+    for row in rows:
+        if not isinstance(row, dict):
+            continue
+        if cwd is None:
+            payload = row.get("payload")
+            cwd = row.get("cwd") or (payload.get("cwd") if isinstance(payload, dict) else None)
+        if title is None:
+            event = conversation_event(row)
+            if event and event.get("role") == "user" and event.get("text", "").strip():
+                title = event["text"].strip()[:200]
+        if title and cwd:
+            break
+    return title, cwd
+
+
+def list_transcripts(profiles=None, agent=None, limit=20, home=None):
+    if isinstance(limit, bool) or not isinstance(limit, int) or not 1 <= limit <= 200:
+        raise AutomationError("Transcript list limit must be 1 to 200.")
+    found = []
+    for name, root, pattern in transcript_roots(profiles, home):
+        if agent is not None and name != agent:
+            continue
+        if not root.is_dir():
+            continue
+        for file in root.glob(pattern):
+            if len(found) >= MAX_TRANSCRIPT_FILES:
+                break
+            if file.is_file() and not file.is_symlink() and not _credential_like(file):
+                found.append((name, file, file.stat()))
+    found.sort(key=lambda item: item[2].st_mtime, reverse=True)
+    rows = []
+    for name, file, info in found[:limit]:
+        title, cwd = _preview(file)
+        rows.append(redact({"agent": name, "path": str(file), "modified_at": info.st_mtime, "bytes": info.st_size,
+                            "first_user_message": title, "cwd": cwd}))
+    return {"transcripts": rows, "scanned": len(found),
+            "note": "Follow one live with transcript_read: pass next_cursor back on each poll. Only known conversation folders are searched."}
+
+
+def conversation_event(row):
+    """Normalize one saved row of a Claude Code, Codex or Cline conversation; None for metadata rows."""
+    if not isinstance(row, dict):
+        return None
+    kind = row.get("type")
+    if "sessionId" in row or kind in {"user", "assistant"} and isinstance(row.get("message"), dict):
+        # Claude Code project log: only the user/assistant messages are the conversation.
+        if kind not in {"user", "assistant"} or not isinstance(row.get("message"), dict):
+            return None
+        event = visible_event(row)
+        if row.get("isSidechain"):
+            event["sidechain"] = True
+        time_value = row.get("timestamp")
+    elif isinstance(row.get("payload"), dict) and "timestamp" in row:
+        # Codex rollout: chat text is in event_msg rows, tool calls in response_item rows.
+        payload = row["payload"]
+        subtype = payload.get("type")
+        if kind == "event_msg" and subtype in {"user_message", "agent_message"}:
+            event = redact({"type": subtype, "role": "user" if subtype == "user_message" else "assistant",
+                            "text": str(payload.get("message", ""))[:200000]})
+        elif kind == "response_item" and subtype in {"function_call", "custom_tool_call", "local_shell_call"}:
+            event = {"type": "tool_call", "role": "assistant", "text": "",
+                     "tools": [{"name": payload.get("name") or subtype, "id": payload.get("call_id")}]}
+        else:
+            return None
+        time_value = row.get("timestamp")
+    elif "ts" in row and ("say" in row or "ask" in row):
+        subtype = row.get("say") or row.get("ask")
+        if subtype not in CLINE_ROLES:
+            return None
+        event = redact({"type": kind, "role": CLINE_ROLES[subtype], "subtype": subtype, "text": str(row.get("text", ""))[:200000]})
+        time_value = row.get("ts")
+    else:
+        event = visible_event(row)
+        time_value = row.get("timestamp")
+    if not str(event.get("text", "")).strip() and not event.get("tools"):
+        return None
+    if time_value is not None:
+        event["time"] = time_value
+    return event
+
+
+def read_transcript(path,cursor=0,limit=100,conversation_only=True):
     file=Path(path).expanduser().resolve(strict=True)
-    if file.suffix.lower() not in {".jsonl",".log",".txt",".json"}:
+    if file.suffix.lower() not in TRANSCRIPT_SUFFIXES:
         raise AutomationError("Choose a transcript JSONL, JSON, LOG or TXT file.")
-    if any(token in file.name.lower() for token in ("auth.json","credentials","token","secret")):
+    if _credential_like(file):
         raise AutomationError("This looks like a credential file, not a conversation transcript.")
-    if not isinstance(cursor,int) or cursor<0 or not isinstance(limit,int) or not 1<=limit<=500:
+    if isinstance(cursor,bool) or not isinstance(cursor,int) or cursor<0 or isinstance(limit,bool) or not isinstance(limit,int) or not 1<=limit<=500:
         raise AutomationError("Invalid transcript cursor or limit.")
+    normalize=(lambda row: conversation_event(row)) if conversation_only else visible_event
     if file.suffix.lower()==".json":
         data=read_json(file)
         rows=data if isinstance(data,list) else [data]
-        selected=rows[cursor:cursor+limit]
-        return {"events":[visible_event(e) for e in selected],"next_cursor":cursor+len(selected),"cursor_unit":"items"}
+        events=[]
+        position=cursor
+        while position<len(rows) and len(events)<limit:
+            event=normalize(rows[position])
+            position+=1
+            if event is not None:
+                events.append(event)
+        return {"events":events,"next_cursor":position,"cursor_unit":"items","has_more":position<len(rows)}
     rows=[]
     with file.open("rb") as stream:
         stream.seek(cursor)
@@ -275,8 +430,11 @@ def read_transcript(path,cursor=0,limit=100):
                 break
             text=raw.decode("utf-8-sig",errors="replace").rstrip("\r\n")
             try:
-                rows.append(visible_event(json.loads(text)))
+                event=normalize(json.loads(text))
             except ValueError:
-                rows.append(redact({"type":"text","text":text}))
+                event=redact({"type":"text","text":text}) if text.strip() else None
+            if event is not None:
+                rows.append(event)
         next_cursor=stream.tell()
-    return {"events":rows,"next_cursor":next_cursor,"cursor_unit":"bytes"}
+        has_more=bool(stream.read(1))
+    return {"events":rows,"next_cursor":next_cursor,"cursor_unit":"bytes","has_more":has_more}

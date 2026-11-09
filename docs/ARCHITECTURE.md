@@ -26,7 +26,7 @@ python main.py integrations
 | Client | Add the generated server entry |
 |---|---|
 | Claude Code | Run `Connect-Claude.cmd` or use the `claude.mcp.json` fragment with `--mcp-config`. |
-| Codex | Add the `codex.config.fragment.toml` block to the client's config. |
+| Codex | Run `Connect-Codex.cmd` (it calls `codex mcp add`), or add the `codex.config.fragment.toml` block to the client's config. |
 | Cline | Merge the `mcpServers` entry in `cline.mcp.json` into `~/.cline/data/settings/cline_mcp_settings.json`, or the path selected by `CLINE_MCP_SETTINGS_PATH`. |
 | Antigravity | Merge the `mcpServers` entry into `~/.gemini/config/mcp_config.json` or the workspace's `.agents/mcp_config.json`. |
 
@@ -42,6 +42,29 @@ Put user-defined profiles in `agents.json` in the data directory. The executable
     "command": "C:\\Tools\\custom-agent.exe",
     "args": ["--headless", "{prompt}"],
     "format": "text"
+  }
+}
+```
+
+## Reading conversations of CLIs you opened
+
+`transcript_list` searches only the known conversation folders and never the login files beside them:
+
+| CLI | Folder and files |
+|---|---|
+| Claude Code | `CLAUDE_CONFIG_DIR` or `~/.claude`, then `projects/*/*.jsonl` |
+| Codex | `CODEX_HOME` or `~/.codex`, then `sessions/**/rollout-*.jsonl` |
+| Cline | `~/.cline/data/tasks/*/ui_messages.json` and the VS Code extension's `tasks/*/ui_messages.json` |
+| Antigravity or a custom CLI | `transcripts` entries in its `agents.json` profile, each with an absolute `root` and a `.jsonl`, `.json`, `.log` or `.txt` `pattern` |
+
+`transcript_read` returns user and assistant text and tool names. Thinking and reasoning blocks, Claude Code metadata rows, Codex reasoning and Cline request records are dropped; pass `conversation_only=false` for every row. JSONL cursors are byte offsets: poll again with `next_cursor` to follow a running session, and a partly written last line waits for the next poll. Cline files are rewritten, so their cursor counts items. Antigravity's storage format is not documented here, so it has no built-in folder; configure one only when its files are readable JSONL or JSON.
+
+```json
+{
+  "agy": {
+    "command": "agy",
+    "args": ["--print", "{prompt}", "--output-format", "stream-json"],
+    "transcripts": [{"root": "C:\\Users\\me\\agy-logs", "pattern": "*.jsonl"}]
   }
 }
 ```
