@@ -8,6 +8,7 @@ import tempfile
 import threading
 import time
 import unittest
+import unittest.mock
 from http.server import BaseHTTPRequestHandler,ThreadingHTTPServer
 from full_automation.cdp import Browser,local_url
 from full_automation.common import AutomationError
@@ -20,9 +21,18 @@ HTML=b'''<!doctype html><html><head><meta charset="utf-8"><title>Automation fixt
 <div id="shadow"></div><iframe id="frame" src="/frame"></iframe>
 <script>const r=document.querySelector('#shadow').attachShadow({mode:'open'});r.innerHTML='<input id="inside"><button id="shadow-button" onclick="this.textContent=String(2+2)">Shadow</button>';</script></body></html>'''
 
+DEMO='''<!doctype html><html><head><meta charset="utf-8"><title>Demo form</title></head><body>
+<input id="customer"><input name="pin" type="password"><select id="branch"><option value="cairo">Cairo</option><option value="alex">Alex</option></select>
+<label><input type="checkbox" id="urgent"> urgent</label><div id="host"></div>
+<button id="send" onclick="location.href='/demo-done?c='+encodeURIComponent(customer.value)+'&b='+branch.value+'&u='+urgent.checked">Send</button>
+<script>document.querySelector('#host').attachShadow({mode:'open'}).innerHTML='<button class="inner" onclick="this.textContent=1">Inner</button>'</script></body></html>'''.encode()
+DONE='''<!doctype html><html><head><meta charset="utf-8"><title>Done</title></head><body><p id="summary"></p>
+<button id="confirm" onclick="const q=new URLSearchParams(location.search);summary.textContent='تم: '+q.get('c')+' / '+q.get('b')+' / '+q.get('u')">Confirm</button></body></html>'''.encode()
+
 class Handler(BaseHTTPRequestHandler):
     def do_GET(self):
-        body=b'<html><body><button id="frame-button">Frame button</button></body></html>' if self.path=="/frame" else HTML
+        pages={"/frame":b'<html><body><button id="frame-button">Frame button</button></body></html>',"/demo":DEMO}
+        body=DONE if self.path.startswith("/demo-done") else pages.get(self.path,HTML)
         self.send_response(200);self.send_header("Content-Type","text/html; charset=utf-8");self.send_header("Content-Length",str(len(body)));self.end_headers();self.wfile.write(body)
     def log_message(self,*args):pass
 
@@ -127,5 +137,56 @@ class BrowserTest(unittest.TestCase):
                 self.assertEqual(fresh.browser.evaluate(replayed,"document.querySelector('#result').textContent"),"replayed")
             engine.browser.call("Target.closeTarget",{"targetId":tab})
             engine.browser.call("Target.closeTarget",{"targetId":replayed})
+
+    def test_human_demonstration_becomes_replayable_workflow(self):
+        with Engine(self.folder/"demo-data") as engine:
+            engine.browser.connect(f"http://127.0.0.1:{self.port}")
+            tab=engine.call("browser_new_tab",{})["targetId"]
+            engine.call("browser_navigate",{"target_id":tab,"url":self.url+"/demo"})
+            engine.call("browser_demo_start",{"target_id":tab,"name":"demo-person"})
+            self.assertTrue(engine.browser.evaluate(tab,"!!document.querySelector('full-automation-recording')"))
+            # Trusted CDP input stands in for the person's mouse and keyboard.
+            engine.browser.fill(tab,"#customer","شركة النور")
+            engine.browser.fill(tab,"input[name=pin]","4321")
+            engine.browser.click(tab,"#urgent")
+            engine.browser.select(tab,"#branch","alex")
+            engine.browser.click(tab,["#host","button.inner"])
+            engine.browser.click(tab,"#send")
+            engine.browser.wait(tab,selector="#confirm")
+            live=engine.call("browser_demo_read",{})
+            self.assertEqual([e["kind"] for e in live["events"]][:6],["fill","fill","click","select","click","click"])
+            engine.browser.click(tab,"#confirm")
+            result=engine.call("browser_demo_stop",{})
+            self.assertFalse(engine.browser.evaluate(tab,"!!document.querySelector('full-automation-recording')"))
+            text=json.dumps(result,ensure_ascii=False)
+            self.assertNotIn("4321",text)
+            self.assertEqual(result["example_inputs"],{"customer":"شركة النور","branch":"alex"})
+            definition=result["definition"]
+            self.assertEqual(definition["required_inputs"],["customer","branch"])
+            tools=[step["tool"] for step in definition["steps"]]
+            self.assertNotIn("manual",tools)
+            self.assertEqual(tools.count("browser_navigate"),1, "a click-caused navigation is not replayed separately")
+            self.assertIn("${env:FA_PIN}",text)
+            # The agent adds the business assertion, as the notes require, then replays with new inputs.
+            definition["steps"]+=[{"tool":"browser_snapshot","args":{"target_id":"${tab.targetId}"},"save_as":"page"},
+                                  {"tool":"assert","args":{"actual":"${page.text}","contains":"تم: مصنع الأمل / cairo / true","label":"confirmation"}}]
+            engine.workflows.save(definition)
+            with Engine(engine.data) as fresh, unittest.mock.patch.dict(os.environ,{"FA_PIN":"9999"}):
+                replay=fresh.workflows.run("demo-person",{"customer":"مصنع الأمل","branch":"cairo"})
+                self.assertEqual(replay["status"],"completed")
+                replayed=replay["outputs"]["tab"]["targetId"]
+            engine.browser.call("Target.closeTarget",{"targetId":tab})
+            engine.browser.call("Target.closeTarget",{"targetId":replayed})
+
+    def test_demonstration_reset_by_reconnect_can_restart(self):
+        with Engine(self.folder/"demo-reset") as engine:
+            engine.browser.connect(f"http://127.0.0.1:{self.port}")
+            engine.call("browser_demo_start",{"target_id":self.target,"name":"reset"})
+            engine.browser.connect(f"http://127.0.0.1:{self.port}")
+            with self.assertRaisesRegex(AutomationError,"reset"):
+                engine.call("browser_demo_read",{})
+            self.assertFalse(engine.browser.evaluate(self.target,"!!document.querySelector('full-automation-recording')"))
+            engine.call("browser_demo_start",{"target_id":self.target,"name":"reset"})
+            self.assertEqual(engine.call("browser_demo_stop",{"save":False})["events"],0)
 
 if __name__=="__main__":unittest.main()

@@ -14,13 +14,14 @@ from . import __version__
 from .agents import Agents, command_prefix, read_transcript
 from .cdp import Browser
 from .common import AutomationError, Journal, ROOT, RunLock, data_directory
+from .demo import BrowserDemo
 from .desktop import Desktop
 from .files import inspect_file
 from .scheduler import Scheduler
 from .validation import check_schema
 from .workflows import Workflows
 
-UNLOCKED_CONTROLS = {"system_stop", "system_resume", "workflow_cancel", "agent_stop", "recording_stop"}
+UNLOCKED_CONTROLS = {"system_stop", "system_resume", "workflow_cancel", "agent_stop", "recording_stop", "browser_demo_stop"}
 
 
 @dataclass
@@ -83,6 +84,7 @@ class Engine:
         self.run_lock=RunLock(self.data/"device.lock")
         self.browser=Browser(self.data)
         self.desktop=Desktop()
+        self.demo=BrowserDemo(self)
         self.agents=Agents(self.data)
         self.workflows=Workflows(self)
         self.scheduler=Scheduler(self)
@@ -116,6 +118,9 @@ class Engine:
             ("browser_downloads","Set a local download directory and enable progress events.",self.browser.downloads,True),
             ("browser_events","Read buffered CDP notifications. Enable desired domains with browser_cdp first.",self.browser.events,False),
             ("browser_cdp","Call any CDP method with explicit params. Supports flattened session_id for attached targets, frames, network and dialogs.",self.browser.call,True),
+            ("browser_demo_start","Watch a person work in one Chrome tab: record their clicks, typing, selections, uploads, Enter/Escape and navigation with unique selectors. Shows a visible badge; passwords are never captured.",self.demo.start,True),
+            ("browser_demo_read","Follow a running Chrome demonstration live: read observed events from a cursor.",self.demo.read,False),
+            ("browser_demo_stop","Stop the Chrome demonstration and convert it to a workflow: typed values become inputs, passwords become environment variables, untranslatable actions become manual steps.",self.demo.stop,True),
             ("desktop_windows","List visible Windows titles, handles, PIDs and executable paths.",self.desktop_windows,False),
             ("desktop_snapshot","Read Windows UI Automation elements and visible terminal text, where exposed by the application.",self.desktop_snapshot,False),
             ("desktop_screenshot","Capture the desktop or chosen window. Images are returned to the requesting agent.",self.desktop_screenshot,False),
@@ -253,6 +258,7 @@ class Engine:
     def close(self):
         self.closing=True
         self.agents.close()
+        self.demo.close()
         self.browser.close()
         self.desktop.close()
         self.workflows.close()

@@ -20,7 +20,9 @@ You are the reasoning agent. Full Automation is your local tool layer. The reque
 6. Export using `workflow_export`; this produces inspectable Python source with the definition embedded. No model call is needed to replay deterministic actions.
 7. When the user has specified the schedule, use `schedule_preview`, then `schedule_create` within that authorization. Dates and times are the Windows machine's local time zone. The registered job checks the workflow digest; editing the workflow requires updating the registered job.
 
-For a human demonstration, use `recording_start` with explicit PIDs, then `recording_stop` and `workflow_import_recording`. The initial recorder cannot capture every operation. Imported manual barriers must be resolved before unattended execution.
+For a person demonstrating in Chrome, call `browser_demo_start` on the tab they will use. A visible badge appears; follow progress with `browser_demo_read`. `browser_demo_stop` returns a saved workflow plus `example_inputs`: typed values and selections become named inputs, password fields become `${env:FA_<NAME>}` variables and are never captured, and frame actions or elements without a unique selector become manual steps. Clicks, double clicks, text, selects, uploads, Enter/Escape and navigation are translated; other keys, chords, scrolling, drag and right click are not. Add an assertion for the business result before replaying or scheduling.
+
+For a human demonstration in Windows applications, use `recording_start` with explicit PIDs, then `recording_stop` and `workflow_import_recording`. The initial recorder cannot capture every operation. Imported manual barriers must be resolved before unattended execution.
 
 ## CLI conversations
 

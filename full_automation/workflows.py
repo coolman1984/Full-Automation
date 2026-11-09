@@ -17,7 +17,7 @@ from .validation import check_schema
 
 TOKEN = re.compile(r"\$\{([^{}]+)\}")
 READ_ONLY = {"browser_tabs","browser_snapshot","desktop_windows","desktop_snapshot","system_status","file_wait","file_inspect"}
-CONTROL = {"workflow_save","workflow_run","workflow_start","workflow_record_start","workflow_record_stop","workflow_import_recording","workflow_export","schedule_create","schedule_remove","agent_start","agent_stop","recording_start","recording_stop","workflow_cancel","system_stop","system_resume"}
+CONTROL = {"workflow_save","workflow_run","workflow_start","workflow_record_start","workflow_record_stop","workflow_import_recording","workflow_export","schedule_create","schedule_remove","agent_start","agent_stop","recording_start","recording_stop","workflow_cancel","system_stop","system_resume","browser_demo_start","browser_demo_read","browser_demo_stop"}
 
 
 def lookup(context, name):

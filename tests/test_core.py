@@ -297,6 +297,36 @@ class CommonTest(unittest.TestCase):
             with lock: pass
 
 
+class DemoConversionTest(unittest.TestCase):
+    def test_corrections_frames_unknown_targets_and_navigation(self):
+        from full_automation.demo import convert
+        events=[{"kind":"fill","selector":"#q","name":"q","value":"draft","time":0},
+                {"kind":"fill","selector":"#q","name":"q","value":"final","time":10},
+                {"kind":"key","key":"Enter","selector":"#q","text_field":True,"time":20},
+                {"kind":"load","url":"http://x/results","time":30},
+                {"kind":"click","selector":"#row","label":"row","time":40},
+                {"kind":"double_click","selector":"#row","time":45},
+                {"kind":"click","selector":None,"label":"canvas","time":50},
+                {"kind":"click","selector":"#f","frame":True,"url":"http://x/frame","time":60},
+                {"kind":"load","url":"http://x/typed","time":20000},
+                {"kind":"fill","selector":"#d3","label":"تاريخ","value":"2026","time":20010}]
+        definition,examples,notes=convert("demo","http://x/start","http://127.0.0.1:9222",events)
+        steps=definition["steps"]
+        tools=[s["tool"] for s in steps]
+        self.assertEqual(examples,{"q":"final","input":"2026"})
+        self.assertEqual(definition["required_inputs"],["q","input"])
+        self.assertEqual(tools.count("browser_fill"),2)
+        self.assertEqual(tools.count("manual"),2)
+        clicks=[s for s in steps if s["tool"]=="browser_click"]
+        self.assertEqual([c["args"].get("count",1) for c in clicks],[2])
+        navigations=[s["args"]["url"] for s in steps if s["tool"]=="browser_navigate"]
+        self.assertEqual(navigations,["http://x/start","http://x/typed"])
+        self.assertIn("browser_key",tools)
+        self.assertTrue(any("assert" in note for note in notes))
+        with tempfile.TemporaryDirectory() as temp, Engine(temp) as engine:
+            validate(definition,engine.tools)
+
+
 class AgentTest(unittest.TestCase):
     def test_visible_chat_shapes_and_redaction(self):
         result=visible_event({"type":"assistant","message":{"role":"assistant","content":[{"type":"text","text":"أهلًا"},{"type":"thinking","thinking":"not-visible"}]}})
