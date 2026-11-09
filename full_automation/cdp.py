@@ -182,6 +182,13 @@ class CDPConnection:
             except (OSError, ValueError) as exc:
                 raise AutomationError("CDP transport failed; inspect state before retrying: " + str(exc)) from exc
 
+    def send_nowait(self, method, params=None):
+        """Send from inside a notification handler; the reply is read and dropped by the current call."""
+        with self.lock:
+            self.counter += 1
+            self.ws.send(json.dumps({"id": self.counter, "method": method, "params": params or {}},
+                                    ensure_ascii=False, allow_nan=False).encode())
+
     def close(self):
         self.ws.close()
 
@@ -433,6 +440,33 @@ class Browser:
                 return {"matched":True}
             time.sleep(0.15)
         raise AutomationError("Browser condition timed out.")
+
+    def dialogs(self,target_id,action="accept",prompt_text=None):
+        """Arm a policy for alert/confirm/prompt/beforeunload dialogs; a blocked page cannot run other commands."""
+        if action not in {"accept","dismiss","off"}:
+            raise AutomationError("Dialog action must be accept, dismiss or off.")
+        if prompt_text is not None and (not isinstance(prompt_text,str) or len(prompt_text)>10000):
+            raise AutomationError("prompt_text must be a string of at most 10000 characters.")
+        connection=self._connection(target_id)
+        seen=getattr(connection,"dialogs",None)
+        if seen is None:
+            seen=connection.dialogs=deque(maxlen=50)
+        if action=="off":
+            connection.listeners.pop("Page.javascriptDialogOpening",None)
+            return {"policy":"off","recent":list(seen)}
+        def handle(message):
+            params=message.get("params",{})
+            reply={"accept":action=="accept"}
+            if action=="accept" and prompt_text is not None and params.get("type")=="prompt":
+                reply["promptText"]=prompt_text
+            seen.append({"type":params.get("type"),"message":str(params.get("message",""))[:2000],"url":params.get("url"),
+                         "handled":action,"time":time.time()})
+            connection.send_nowait("Page.handleJavaScriptDialog",reply)
+            return True
+        connection.listeners["Page.javascriptDialogOpening"]=handle
+        self.call("Page.enable",{},target_id)
+        return {"policy":action,"recent":list(seen),
+                "note":"Dialogs on this tab are now handled automatically while commands run. Use action=off to stop."}
 
     def events(self,target_id=None,clear=True):
         connection=self._connection(target_id)

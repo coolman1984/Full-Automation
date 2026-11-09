@@ -116,6 +116,7 @@ class Engine:
             ("browser_wait","Wait for a unique selector or a trusted JavaScript condition. Expressions can change page state.",self.browser.wait,True),
             ("browser_upload","Set a file input to explicit local files.",self.browser.upload,True),
             ("browser_downloads","Set a local download directory and enable progress events.",self.browser.downloads,True),
+            ("browser_dialogs","Arm automatic handling of alert/confirm/prompt/beforeunload dialogs on a tab (accept, dismiss or off) and list recent dialog messages. Put it before the action that opens a dialog.",self.browser.dialogs,True),
             ("browser_events","Read buffered CDP notifications. Enable desired domains with browser_cdp first.",self.browser.events,False),
             ("browser_cdp","Call any CDP method with explicit params. Supports flattened session_id for attached targets, frames, network and dialogs.",self.browser.call,True),
             ("browser_demo_start","Watch a person work in one Chrome tab: record their clicks, typing, selections, uploads, Enter/Escape and navigation with unique selectors. Shows a visible badge; passwords are never captured.",self.demo.start,True),
