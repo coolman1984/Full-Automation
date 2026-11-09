@@ -99,7 +99,10 @@ class RunLock:
         self.file = None
 
     def __enter__(self):
-        self.local.acquire()
+        # Never wait: the MCP stdio loop is single-threaded, so blocking here while a
+        # background workflow owns the device would stall status and cancel requests.
+        if not self.local.acquire(blocking=False):
+            raise AutomationError("Another automation owns the device. Retry after it finishes.")
         if self.depth:
             self.depth += 1
             return self

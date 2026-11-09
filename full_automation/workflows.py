@@ -90,6 +90,12 @@ def validate(definition, tools):
                 raise AutomationError("Tool cannot be embedded in a deterministic workflow: "+str(action))
             if not isinstance(step.get("args",{}),dict):
                 raise AutomationError("Step args must be an object.")
+            if action=="assert":
+                check_condition(step.get("args",{}),"assert")
+            elif action=="if":
+                check_condition(step["condition"],"if condition")
+            elif action=="wait" and set(step.get("args",{}))-{"seconds"}:
+                raise AutomationError("wait accepts only seconds.")
             if action in tools:
                 check_schema(step.get("args", {}), tools[action].schema, action, templates=True)
             if action == "wait":
@@ -108,6 +114,23 @@ def validate(definition, tools):
     if not definition["steps"]:
         raise AutomationError("Workflow has no steps.")
     return definition
+
+
+COMPARISONS = ("equals", "contains")
+
+
+def check_condition(spec, where):
+    """Reject misspelled or ambiguous comparisons; an unknown key must never mean 'truthy'."""
+    unknown = set(spec) - {"actual", "label", *COMPARISONS}
+    if unknown:
+        raise AutomationError(where + " has unknown field(s): " + ", ".join(sorted(map(str, unknown)))
+                              + ". Use actual, label and at most one of: " + ", ".join(COMPARISONS) + ".")
+    if "actual" not in spec:
+        raise AutomationError(where + " requires actual.")
+    if sum(key in spec for key in COMPARISONS) > 1:
+        raise AutomationError(where + " must use only one of: " + ", ".join(COMPARISONS) + ".")
+    if "label" in spec and not isinstance(spec["label"], str):
+        raise AutomationError(where + " label must be a string.")
 
 
 def walk_steps(steps, prefix=""):
