@@ -193,7 +193,7 @@ class EngineTest(unittest.TestCase):
         result=self.engine.scheduler.preview("morning","test")
         self.assertEqual(result["workflow_sha256"],digest(definition))
         self.assertIn("--data-dir",result["arguments"])
-        self.assertIn(str(self.data),result["arguments"])
+        self.assertIn(str(self.engine.data),result["arguments"])
         self.assertIn("--expected-sha256",result["arguments"])
 
     def test_schedule_invalid_times(self):
@@ -308,7 +308,7 @@ class AgentTest(unittest.TestCase):
         with tempfile.TemporaryDirectory() as temp:
             path=Path(temp)/"chat.jsonl"
             first=json.dumps({"type":"assistant","text":"one"})+'\n'
-            path.write_text(first+'{"type":')
+            path.write_bytes((first+'{"type":').encode())
             result=read_transcript(str(path))
             self.assertEqual(result["next_cursor"],len(first.encode()))
             self.assertEqual(len(result["events"]),1)
