@@ -6,6 +6,7 @@ from pathlib import Path
 import subprocess
 import sys
 import tempfile
+import threading
 import time
 import unittest
 from unittest.mock import patch
@@ -105,6 +106,31 @@ class EngineTest(unittest.TestCase):
         self.assertEqual(self.engine.call("workflow_run_info", {"run_id":job_id})["run"]["status"], "cancelled")
         self.assertFalse(self.engine.status()["emergency_stop"])
         self.assertFalse(self.calls)
+
+    def test_device_write_fails_fast_while_background_workflow_runs(self):
+        self.engine.workflows.save(self.recipe([{"tool":"wait","args":{"seconds":20}}]))
+        job_id = self.engine.call("workflow_start", {"name":"test"})["job_id"]
+        deadline = time.monotonic() + 3
+        while self.engine.call("workflow_status", {"job_id":job_id})["status"] != "running" and time.monotonic() < deadline:
+            time.sleep(0.02)
+        started = time.monotonic()
+        with self.assertRaisesRegex(AutomationError, "Another automation owns the device"):
+            self.engine.call("echo", {"value":"blocked"})
+        self.assertLess(time.monotonic() - started, 1)
+        self.assertFalse(self.calls)
+        self.engine.call("workflow_cancel", {"job_id":job_id})
+
+    def test_condition_fields_are_strict(self):
+        for args in ({"actual":"Error page","equal":"Saved"}, {"actual":1,"equals":1,"contains":1},
+                     {"equals":"Saved"}, {"actual":1,"label":5}):
+            with self.subTest(args=args), self.assertRaises(AutomationError):
+                self.engine.workflows.save(self.recipe([{"tool":"assert","args":args}]))
+        with self.assertRaisesRegex(AutomationError, "unknown field"):
+            self.engine.workflows.save(self.recipe([{"tool":"if","condition":{"actual":True,"equal":False},"then":[]}]))
+        with self.assertRaisesRegex(AutomationError, "only seconds"):
+            self.engine.workflows.save(self.recipe([{"tool":"wait","args":{"second":5}}]))
+        with self.assertRaisesRegex(AutomationError, "assertion failed"):
+            self.engine.workflows.run_definition(self.recipe([{"tool":"assert","args":{"actual":"Error page","equals":"Saved"}}]))
 
     def test_digest_change_rejects_scheduled_recipe(self):
         recipe=self.recipe([{"tool":"echo","args":{"value":1}}])
@@ -251,6 +277,24 @@ class CommonTest(unittest.TestCase):
                     with self.assertRaises(AutomationError):
                         with RunLock(path): pass
             with RunLock(path): pass
+
+    def test_lock_held_by_another_thread_does_not_wait(self):
+        with tempfile.TemporaryDirectory() as temp:
+            lock=RunLock(Path(temp)/"device.lock")
+            held=threading.Event(); release=threading.Event()
+            def owner():
+                with lock:
+                    held.set(); release.wait(5)
+            thread=threading.Thread(target=owner); thread.start()
+            try:
+                self.assertTrue(held.wait(5))
+                started=time.monotonic()
+                with self.assertRaisesRegex(AutomationError,"Another automation"):
+                    with lock: pass
+                self.assertLess(time.monotonic()-started,1)
+            finally:
+                release.set(); thread.join(5)
+            with lock: pass
 
 
 class AgentTest(unittest.TestCase):

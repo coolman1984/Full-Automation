@@ -16,9 +16,9 @@ A complete placeholder preserves the referenced JSON value type. A placeholder w
 
 | Operation | Fields and behavior |
 |---|---|
-| `wait` | `args.seconds` from zero to 120. Checks stop and cancellation while waiting |
-| `assert` | `args.actual` plus `equals`, `contains`, or a truthiness check. `label` identifies the evidence expected |
-| `if` | `condition` uses the same comparison fields. Execute `then` or `else` |
+| `wait` | Only `args.seconds`, from zero to 120. Checks stop and cancellation while waiting |
+| `assert` | Required `args.actual` plus at most one of `equals` or `contains`; with neither, `actual` must be truthy. Optional string `label` identifies the evidence expected. Any other field is rejected on save, so a misspelled comparison cannot pass as a truthiness check |
+| `if` | `condition` uses the same strict comparison fields. Execute `then` or `else` |
 | `foreach` | `items` is a list or variable. Bind each item under `as` and execute nested `steps` |
 | `manual` | A review barrier preserved from demonstrations. Every branch is checked before replay or scheduling |
 
