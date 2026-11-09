@@ -16,6 +16,7 @@
 | أخطاء متكررة وطريقة تجنبها | [الدروس المثبتة](history/LESSONS.md) |
 | قدرات تحتاج تنفيذًا أو إثباتًا | [خطة الفجوات](ROADMAP_AR.md) |
 | مراجع المنتج والتقنيات | [المصادر](SOURCES.md) |
+| شخصية الوكيل القائد ومعاييره | [Lead engineer persona](LEAD_ENGINEER.md) |
 
 ## Project skills
 

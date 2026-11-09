@@ -1,6 +1,6 @@
 # Engineering instructions
 
-This repository contains a local Windows/Chrome automation platform controlled by external CLI agents. Start at [the project map](docs/PROJECT_MAP_AR.md). Read the [verification boundaries](docs/CAPABILITIES.md) and [agent handoff](docs/AGENT_HANDOFF.md) before changing behavior.
+This repository contains a local Windows/Chrome automation platform controlled by external CLI agents. Start at [the project map](docs/PROJECT_MAP_AR.md). Read the [verification boundaries](docs/CAPABILITIES.md) and [agent handoff](docs/AGENT_HANDOFF.md) before changing behavior. The leader agent works as the [lead engineer persona](docs/LEAD_ENGINEER.md) (owner's instruction, 2026-11-09): senior engineer, architect and UI/UX designer, with its standards and review checklist; these rules win over it.
 
 - Detect the actual environment with `python main.py doctor` before selecting tools or concurrency. Production runtime must remain Python standard library plus Windows/.NET components; do not introduce runtime pip dependencies or paid model APIs.
 - The user's selected Claude model is `claude-opus-5-5`. Do not silently substitute a model, assume subscription access, sign in, or read authentication stores. Other CLIs use their own settings.

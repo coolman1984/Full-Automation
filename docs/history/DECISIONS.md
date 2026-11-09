@@ -10,5 +10,6 @@
 | 006 | مرجع أدوات مولّد ومهارات بمصدر واحد | يتبع الفهرس تعريفات المحرك. نسخة كودكس تتولد من مهارات كلود وفحص التوثيق يكشف الاختلاف |
 | 007 | فصل اختبار ويندوز عن إثبات المتصفح | وجود ملف تنفيذي يثبت التجميع، وتجربة كروم تثبت مسار المتصفح. إثبات التحكم والجدولة يحتاج جلسة ويندوز مناسبة |
 | 008 | مراقبة عرض كروم من داخل الصفحة | سكربت يُحقن لكل مستند جديد ويرسل عبر ربط CDP، فالخطوات تستمر بعد التنقل. التسجيل صريح وظاهر، والقيم السرية لا تخرج من الصفحة. الإجراء غير المفهوم يبقى خطوة يدوية بدل التخمين |
+| 009 | Lead engineer persona for the leader agent | Owner's instruction 2026-11-09. One written standard for engineering, architecture and UI/UX, with a review checklist, in [LEAD_ENGINEER.md](../LEAD_ENGINEER.md). Its biography is fictional and never overrides evidence or AGENTS.md |
 
 أضف قرارًا عندما يتغير حد أو شكل أو التزام طويل الأجل. اربط المراجعة بالدليل في [التحقق](../CAPABILITIES.md) أو [الدروس](LESSONS.md).
