@@ -102,12 +102,15 @@ SCRIPT = r"""(() => {
   if (!e.isTrusted || own(e) || e.detail > 1) return;
   const el = origin(e);
   if (!el || textField(el) || el.matches('select,option,input[type=file]')) return;
+  // A click that lands on a frame element itself (for example while the frame loads) is not a replayable
+  // target: a same-origin frame records its own clicks, and a cross-origin one is reported as frame focus.
+  if (el.matches('iframe,frame')) { setTimeout(checkFocus, 0); return; }
   send({kind: 'click', button: e.button, ...describe(el)});
  }, true);
  addEventListener('dblclick', (e) => {
   if (!e.isTrusted || own(e)) return;
   const el = origin(e);
-  if (el && !textField(el)) send({kind: 'double_click', ...describe(el)});
+  if (el && !textField(el) && !el.matches('iframe,frame')) send({kind: 'double_click', ...describe(el)});
  }, true);
  addEventListener('change', (e) => {
   if (own(e)) return;
@@ -126,11 +129,10 @@ SCRIPT = r"""(() => {
   send({kind: 'key', key: e.key, modifiers: (e.altKey ? 1 : 0) | (e.ctrlKey ? 2 : 0) | (e.metaKey ? 4 : 0) | (e.shiftKey ? 8 : 0),
    ...(target ? describe(target) : {})});
  }, true);
- if (window === top) {
-  // Focus moved into a frame this page cannot see into: record that it happened instead of missing it.
-  // Moving between two frames fires no blur here, so the focused element is also checked periodically.
-  let reported = null;
-  const checkFocus = () => {
+ // Focus moved into a frame this page cannot see into: record that it happened instead of missing it.
+ // Moving between two frames fires no blur here, so the focused element is also checked periodically.
+ let reported = null;
+ const checkFocus = () => {
    const a = document.activeElement;
    if (!a || !a.matches('iframe,frame')) { reported = null; return; }
    if (a === reported) return;
@@ -138,7 +140,8 @@ SCRIPT = r"""(() => {
    try { reachable = !!a.contentDocument; } catch (e) {}
    reported = a;
    if (!reachable) send({kind: 'frame_focus', ...describe(a), src: a.getAttribute('src')});
-  };
+ };
+ if (window === top) {
   addEventListener('blur', () => setTimeout(checkFocus, 0));
   setInterval(() => { if (active) checkFocus(); }, 400);
  }

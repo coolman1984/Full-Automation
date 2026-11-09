@@ -278,8 +278,10 @@ class BrowserTest(unittest.TestCase):
             result=engine.call("browser_demo_stop",{})
             steps=result["definition"]["steps"]
             framed=[s for s in steps if s["tool"] in {"browser_fill","browser_click"}]
-            self.assertEqual([(s["tool"],s["args"]["frame"]) for s in framed],[("browser_fill",["#frame"]),("browser_click",["#frame"])])
+            self.assertEqual([(s["tool"],s["args"].get("frame")) for s in framed],[("browser_fill",["#frame"]),("browser_click",["#frame"])],
+                             json.dumps({"steps":steps,"events":result["events"]},ensure_ascii=False))
             self.assertEqual(result["example_inputs"],{"frame_input":"طلب ٤٢"})
+            self.assertFalse(any(s["args"].get("selector") in {"#remote","#frame"} for s in steps if s["tool"]=="browser_click"))
             remote=[s for s in steps if s["tool"]=="manual"]
             self.assertEqual(len(remote),1);self.assertIn("cross-origin",remote[0]["description"])
             # Replace the cross-origin note with nothing (it was only a focus change) and replay with new input.
