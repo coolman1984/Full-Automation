@@ -1,0 +1,278 @@
+from __future__ import annotations
+
+from dataclasses import dataclass
+import hashlib
+import inspect
+import json
+import math
+import os
+from pathlib import Path
+import platform
+import shutil
+import subprocess
+import sys
+import time
+
+from . import __version__
+from .agents import Agents, command_prefix, read_transcript
+from .cdp import Browser
+from .common import AutomationError, Journal, ROOT, RunLock, data_directory
+from .desktop import Desktop
+from .scheduler import Scheduler
+from .workflows import Workflows
+
+
+@dataclass
+class Tool:
+    name: str
+    description: str
+    handler: object
+    schema: dict
+    mutates: bool = False
+
+    def public(self):
+        return {"name":self.name,"description":self.description,"inputSchema":self.schema,
+                "annotations":{"readOnlyHint":not self.mutates,"destructiveHint":self.mutates,"openWorldHint":True}}
+
+
+def schema_for(handler):
+    signature=inspect.signature(handler)
+    properties={}
+    required=[]
+    arrays={"files","keys","pids","weekdays","arguments"}
+    objects={"params","window","selector","variables","definition"}
+    numbers={"timeout","x","y","to_x","to_y","seconds","stable_seconds"}
+    integers={"port","count","cursor","limit","modifiers","delta"}
+    booleans={"headless","clear","capture_text","screenshots","allow_keyboard","parameterize_inputs","save"}
+    for name,param in signature.parameters.items():
+        if param.kind in {inspect.Parameter.VAR_KEYWORD,inspect.Parameter.VAR_POSITIONAL}:
+            continue
+        if name in arrays:
+            kind={"type":"array"}
+        elif name in objects:
+            kind={"type":"object"}
+        elif name in numbers:
+            kind={"type":"number"}
+        elif name in integers:
+            kind={"type":"integer"}
+        elif name in booleans:
+            kind={"type":"boolean"}
+        elif name=="value":
+            kind={}
+        else:
+            kind={"type":"string"}
+        if name=="selector" and handler.__module__.endswith("cdp"):
+            kind={"anyOf":[{"type":"string"},{"type":"array","items":{"type":"string"}}]}
+        if param.default is inspect.Parameter.empty:
+            required.append(name)
+        elif param.default is not None:
+            kind["default"]=param.default
+        properties[name]=kind
+    return {"type":"object","properties":properties,"required":required,"additionalProperties":False}
+
+
+def check_schema(value,schema,path="arguments"):
+    if "anyOf" in schema:
+        for option in schema["anyOf"]:
+            try:
+                check_schema(value,option,path)
+                return
+            except AutomationError:
+                pass
+        raise AutomationError(path+" does not match an accepted type.")
+    types={"object":dict,"array":list,"string":str,"number":(int,float),"integer":int,"boolean":bool}
+    kind=schema.get("type")
+    if kind and (not isinstance(value,types[kind]) or kind in {"number","integer"} and isinstance(value,bool)):
+        raise AutomationError(path+" must be "+kind)
+    if kind in {"number","integer"} and isinstance(value,float) and not math.isfinite(value):
+        raise AutomationError(path+" must be finite")
+    if kind=="object":
+        for key in schema.get("required",[]):
+            if key not in value:
+                raise AutomationError(path+" missing "+key)
+        props=schema.get("properties",{})
+        if schema.get("additionalProperties") is False:
+            unknown=set(value)-set(props)
+            if unknown:
+                raise AutomationError("Unknown argument(s): "+", ".join(sorted(unknown)))
+        for key,child in value.items():
+            if key in props:
+                check_schema(child,props[key],path+"."+key)
+    if kind=="array" and "items" in schema:
+        for child in value:
+            check_schema(child,schema["items"],path+"[]")
+
+
+class Engine:
+    def __init__(self,data=None):
+        self.data=Path(data).resolve() if data else data_directory()
+        self.data.mkdir(parents=True,exist_ok=True)
+        self.closing=False
+        self.journal=Journal(self.data/"logs/actions.jsonl")
+        self.run_lock=RunLock(self.data/"device.lock")
+        self.browser=Browser(self.data)
+        self.desktop=Desktop()
+        self.agents=Agents(self.data)
+        self.workflows=Workflows(self)
+        self.scheduler=Scheduler(self)
+        self.tools={}
+        self._register()
+
+    def add(self,name,description,handler,mutates=False):
+        self.tools[name]=Tool(name,description,handler,schema_for(handler),mutates)
+
+    def _register(self):
+        methods=[
+            ("system_status","Detect OS, CPU, Python and bridge availability. Does not start recording.",self.status,False),
+            ("system_stop","Set the persistent emergency stop flag. Current OS calls cannot be undone.",self.stop,False),
+            ("system_resume","Clear the emergency stop flag after inspecting the device.",self.resume,False),
+            ("system_launch","Launch an installed executable with a literal argument array; no shell interpolation.",self.launch,True),
+            ("browser_connect","Connect explicitly to a loopback Chrome CDP endpoint.",self.browser.connect,True),
+            ("browser_launch","Start installed Chrome with a dedicated automation profile and local debugging port.",self.browser.launch,True),
+            ("browser_tabs","List browser targets and their IDs.",self.browser.tabs,False),
+            ("browser_new_tab","Create a Chrome tab. Save targetId for subsequent actions.",self.browser.new_tab,True),
+            ("browser_navigate","Navigate a tab and wait for document readiness.",self.browser.navigate,True),
+            ("browser_snapshot","Read visible text and unique CSS selectors, including open shadow roots. frame_id reads a specific frame.",self.browser.snapshot,False),
+            ("browser_click","Click one unique visible CSS selector with trusted CDP mouse input; top frame or open shadow roots.",self.browser.click,True),
+            ("browser_fill","Replace an editable field and verify its value. Password values are not returned.",self.browser.fill,True),
+            ("browser_key","Send a key; modifier mask: Alt=1 Ctrl=2 Meta=4 Shift=8.",self.browser.key,True),
+            ("browser_select","Choose a native select option by value.",self.browser.select,True),
+            ("browser_scroll","Scroll the top-frame viewport.",self.browser.scroll,True),
+            ("browser_screenshot","Return the viewport as an MCP image. It may contain private on-screen information.",self.browser.screenshot,False),
+            ("browser_evaluate","Run explicitly supplied JavaScript in a page or selected frame; may change page state.",self.browser.evaluate,True),
+            ("browser_wait","Wait for a unique selector or a JavaScript condition.",self.browser.wait,False),
+            ("browser_upload","Set a file input to explicit local files.",self.browser.upload,True),
+            ("browser_downloads","Set a local download directory and enable progress events.",self.browser.downloads,True),
+            ("browser_events","Read buffered CDP notifications. Enable desired domains with browser_cdp first.",self.browser.events,False),
+            ("browser_cdp","Call any CDP method with explicit params. Supports flattened session_id for attached targets, frames, network and dialogs.",self.browser.call,True),
+            ("desktop_windows","List visible Windows titles, handles, PIDs and executable paths.",self.desktop_windows,False),
+            ("desktop_snapshot","Read Windows UI Automation elements and visible terminal text, where exposed by the application.",self.desktop_snapshot,False),
+            ("desktop_screenshot","Capture the desktop or chosen window. Images are returned to the requesting agent.",self.desktop_screenshot,False),
+            ("desktop_focus","Bring one exact window into the foreground.",self.desktop_focus,True),
+            ("desktop_action","Act on one unique element: invoke, select, toggle, expand, collapse, focus, click, double_click, right_click.",self.desktop_action,True),
+            ("desktop_fill","Set a Windows field. Optional explicit Unicode keyboard fallback requires result inspection.",self.desktop_fill,True),
+            ("desktop_keys","Send a chord such as [CTRL,S] to an optional exact window.",self.desktop_keys,True),
+            ("desktop_mouse","Use physical screenshot coordinates: move, click, right_click, double_click, drag, wheel.",self.desktop_mouse,True),
+            ("recording_start","Start visible desktop recording for explicitly selected PIDs. Text and screenshots default off.",self.recording_start,True),
+            ("recording_stop","Stop the owned desktop recording and save the encrypted session.",self.recording_stop,False),
+            ("recording_status","Read the current desktop recorder state.",self.recording_status,False),
+            ("agent_probe","Detect installed Claude, Codex, Cline, agy and configured custom CLI profiles.",self.agents.probe,False),
+            ("agent_start","Start a managed non-interactive CLI task and capture its visible conversation. Uses the CLI's own login and permissions.",self.agents.start,True),
+            ("agent_read","Poll a managed CLI conversation using its returned cursor.",self.agents.read,False),
+            ("agent_list","List CLI sessions owned by this server instance.",self.agents.list,False),
+            ("agent_stop","Stop an owned CLI process tree.",self.agents.stop,False),
+            ("transcript_read","Read an explicitly chosen saved conversation file; never scans credential directories.",read_transcript,False),
+            ("workflow_save","Validate and save a deterministic workflow; variables use ${name} or ${env:NAME}.",self.workflows.save,True),
+            ("workflow_list","List saved deterministic workflows.",self.workflows.list,False),
+            ("workflow_run","Run a saved workflow with checks, variables, branching, loops, bounded retries and an exclusive device lock.",self.workflows.run,True),
+            ("workflow_start","Start a long workflow in the background so MCP requests do not need to wait. Poll workflow_status.",self.workflows.start,True),
+            ("workflow_status","Read the status and result of an owned background workflow job.",self.workflows.status,False),
+            ("workflow_record_start","Record this agent's subsequent tool calls as a reusable workflow. Input values are parameterized by default.",self.workflows.record_start,True),
+            ("workflow_record_stop","Save the agent action recording as an editable workflow definition.",self.workflows.record_stop,True),
+            ("workflow_import_recording","Convert an encrypted desktop recording to a workflow. Unsupported actions remain explicit manual barriers.",self.workflows.import_recording,True),
+            ("workflow_export","Export a saved workflow to inspectable Python source.",self.workflows.export,True),
+            ("schedule_preview","Prepare an exact Windows Task Scheduler definition without registering it.",self.scheduler.preview,False),
+            ("schedule_create","Register or replace an own-folder Windows scheduled task, pinned to the workflow digest. Times use the Windows local time zone.",self.scheduler.create,True),
+            ("schedule_list","List only FullAutomation Windows scheduled tasks.",self.scheduler.list,False),
+            ("schedule_remove","Remove one named FullAutomation scheduled task.",self.scheduler.remove,True),
+            ("file_wait","Wait until a specific output file exists and its size and modification time stop changing.",self.file_wait,False),
+        ]
+        for method in methods:
+            self.add(*method)
+
+    def call(self,name,args=None,record=True):
+        if self.closing:
+            raise AutomationError("Automation server is closing.")
+        if name not in self.tools:
+            raise AutomationError("Unknown tool: "+str(name))
+        args={} if args is None else args
+        tool=self.tools[name]
+        check_schema(args,tool.schema)
+        if tool.mutates:
+            self.check_stop()
+        started=time.monotonic()
+        try:
+            if tool.mutates and name!="workflow_start":
+                with self.run_lock:
+                    result=tool.handler(**args)
+            else:
+                result=tool.handler(**args)
+            if record:
+                self.workflows.capture(name,args,result)
+            self.journal.add({"tool":name,"status":"ok","elapsed_ms":round((time.monotonic()-started)*1000)})
+            return result
+        except Exception as exc:
+            self.journal.add({"tool":name,"status":"failed","error":str(exc)[:1500]})
+            raise
+
+    def check_stop(self):
+        if self.closing:
+            raise AutomationError("Automation server is closing.")
+        if (self.data/"STOP").exists():
+            raise AutomationError("Emergency stop is active. Inspect the device, then call system_resume.")
+
+    def stop(self):
+        (self.data/"STOP").touch()
+        return {"stopped":True,"note":"Already-issued OS or browser actions cannot be undone."}
+
+    def resume(self):
+        (self.data/"STOP").unlink(missing_ok=True)
+        return {"stopped":False}
+
+    def status(self):
+        return {"version":__version__,"os":platform.platform(),"cpu_count":os.cpu_count(),"python":sys.version.split()[0],
+                "python_executable":sys.executable,"data_directory":str(self.data),"desktop_supported":os.name=="nt",
+                "bridge_exists":self.desktop.executable.is_file(),"cdp_endpoint":self.browser.endpoint,"emergency_stop":(self.data/"STOP").exists(),
+                "model":"External CLI owns model access. Claude profile requests claude-opus-5-5 without fallback.","tool_count":len(self.tools)}
+
+    def launch(self,executable,arguments=None,cwd=None):
+        arguments=arguments or []
+        if not isinstance(arguments,list) or not all(isinstance(a,str) for a in arguments):
+            raise AutomationError("arguments must be an array of strings.")
+        directory=Path(cwd).resolve(strict=True) if cwd else ROOT
+        process=subprocess.Popen(command_prefix(executable)+arguments,cwd=str(directory),stdin=subprocess.DEVNULL,stdout=subprocess.DEVNULL,stderr=subprocess.DEVNULL,shell=False)
+        return {"pid":process.pid}
+
+    def desktop_windows(self): return self.desktop.call("windows")
+    def desktop_snapshot(self,window,limit=300): return self.desktop.call("snapshot",{"window":window,"limit":limit})
+    def desktop_screenshot(self,window=None): return self.desktop.call("screenshot",{"window":window} if window else {})
+    def desktop_focus(self,window): return self.desktop.call("focus",{"window":window})
+    def desktop_action(self,selector,action="invoke"): return self.desktop.call("action",{"selector":selector,"action":action})
+    def desktop_fill(self,selector,text,allow_keyboard=False): return self.desktop.call("fill",{"selector":selector,"text":text,"allow_keyboard":allow_keyboard})
+    def desktop_keys(self,keys,window=None): return self.desktop.call("keys",{"keys":keys,**({"window":window} if window else {})})
+    def desktop_mouse(self,x,y,action="click",to_x=0,to_y=0,delta=-120): return self.desktop.call("mouse",{"x":x,"y":y,"action":action,"to_x":to_x,"to_y":to_y,"delta":delta})
+    def recording_start(self,pids,capture_text=False,screenshots=False): return self.desktop.call("record_start",{"pids":pids,"capture_text":capture_text,"screenshots":screenshots})
+    def recording_stop(self): return self.desktop.call("record_stop")
+    def recording_status(self): return self.desktop.call("record_status")
+
+    def file_wait(self,path,timeout=60,stable_seconds=1):
+        if not 0<timeout<=120 or not 0<=stable_seconds<=timeout:
+            raise AutomationError("Invalid file wait duration.")
+        file=Path(path).expanduser().resolve()
+        deadline=time.monotonic()+timeout
+        previous=None
+        since=time.monotonic()
+        while time.monotonic()<deadline:
+            self.check_stop()
+            try:
+                stat=file.stat()
+                current=(stat.st_size,stat.st_mtime_ns)
+                if current==previous and time.monotonic()-since>=stable_seconds:
+                    return {"path":str(file),"bytes":stat.st_size,"stable":True}
+                if current!=previous:
+                    previous=current
+                    since=time.monotonic()
+            except FileNotFoundError:
+                previous=None
+            time.sleep(0.1)
+        raise AutomationError("Output file did not become stable before timeout.")
+
+    def close(self):
+        self.closing=True
+        self.agents.close()
+        self.browser.close()
+        self.desktop.close()
+        self.workflows.close()
+
+    def __enter__(self): return self
+    def __exit__(self,*args): self.close()

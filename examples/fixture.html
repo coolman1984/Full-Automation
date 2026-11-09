@@ -1,0 +1,15 @@
+<!doctype html>
+<html lang="ar" dir="rtl">
+<meta charset="utf-8">
+<title>تجربة الأتمتة</title>
+<h1>تجربة الأتمتة</h1>
+<label for="name">الاسم</label>
+<input id="name">
+<button id="apply" type="button">عرض النتيجة</button>
+<p id="result" role="status"></p>
+<script>
+document.querySelector('#apply').addEventListener('click', () => {
+  document.querySelector('#result').textContent = 'تم إدخال: ' + document.querySelector('#name').value;
+});
+</script>
+</html>

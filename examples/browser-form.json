@@ -1,0 +1,13 @@
+{
+  "version": 1,
+  "name": "browser-form",
+  "required_inputs": ["url", "name"],
+  "steps": [
+    {"tool": "browser_new_tab", "save_as": "tab"},
+    {"tool": "browser_navigate", "args": {"target_id": "${tab.targetId}", "url": "${url}"}},
+    {"tool": "browser_fill", "args": {"target_id": "${tab.targetId}", "selector": "#name", "text": "${name}"}},
+    {"tool": "browser_click", "args": {"target_id": "${tab.targetId}", "selector": "#apply"}},
+    {"tool": "browser_snapshot", "args": {"target_id": "${tab.targetId}"}, "save_as": "page"},
+    {"tool": "assert", "args": {"actual": "${page.text}", "contains": "تم إدخال: ${name}", "label": "Result contains the new input"}}
+  ]
+}
