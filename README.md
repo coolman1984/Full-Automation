@@ -22,6 +22,8 @@ Setup.cmd
 Connect-Claude.cmd
 ```
 
+ولربط كودكس بنفس الطريقة: `Connect-Codex.cmd`.
+
 ٤. افتح كلود بالنموذج الذي طلبته:
 
 ```powershell

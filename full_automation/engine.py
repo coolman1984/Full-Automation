@@ -45,7 +45,7 @@ def schema_for(handler):
     objects={"params","window","selector","variables","definition"}
     numbers={"timeout","x","y","to_x","to_y","seconds","stable_seconds","newer_than"}
     integers={"port","count","cursor","limit","modifiers","delta"}
-    booleans={"headless","clear","capture_text","screenshots","allow_keyboard","parameterize_inputs","save","with_sha256"}
+    booleans={"headless","clear","capture_text","screenshots","allow_keyboard","parameterize_inputs","save","with_sha256","conversation_only"}
     for name,param in signature.parameters.items():
         if param.kind in {inspect.Parameter.VAR_KEYWORD,inspect.Parameter.VAR_POSITIONAL}:
             continue
@@ -137,7 +137,8 @@ class Engine:
             ("agent_read","Poll a managed CLI conversation using its returned cursor.",self.agents.read,False),
             ("agent_list","List CLI sessions owned by this server instance.",self.agents.list,False),
             ("agent_stop","Stop an owned CLI process tree.",self.agents.stop,True),
-            ("transcript_read","Read an explicitly chosen saved conversation file; never scans credential directories.",read_transcript,False),
+            ("transcript_list","Find recent saved conversations of Claude Code, Codex, Cline and profiles with configured transcript folders, including CLI sessions the user opened. Returns paths, cwd and the first user message.",self.agents.transcripts,False),
+            ("transcript_read","Read what was written in a saved CLI conversation. Poll again with next_cursor to follow a running session live. conversation_only drops metadata rows; private reasoning is never returned.",read_transcript,False),
             ("workflow_save","Validate and save a deterministic workflow; variables use ${name} or ${env:NAME}.",self.workflows.save,True),
             ("workflow_list","List saved deterministic workflows.",self.workflows.list,False),
             ("workflow_plan","Inspect a saved workflow's input requirements, blockers and possible write steps without running it.",self.workflows.plan,False),
