@@ -12,3 +12,5 @@
 - [Cline CLI configuration and output](https://github.com/cline/cline/blob/main/docs/cli/cli-reference.mdx)
 - [Antigravity CLI flags](https://antigravity.google/docs/cli/reference/)
 - [Antigravity MCP configuration](https://antigravity.google/docs/mcp?tab=cli)
+- [Claude Code project skills](https://code.claude.com/docs/en/skills)
+- [Codex project skills](https://developers.openai.com/codex/skills/)

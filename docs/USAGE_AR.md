@@ -34,6 +34,7 @@ python -m http.server 8765 --bind 127.0.0.1 --directory examples
 ```powershell
 python main.py call browser_launch
 python main.py workflow save examples/browser-form.json
+python main.py workflow plan browser-form --variables-file examples/browser-inputs.json
 python main.py workflow run browser-form --variables-file examples/browser-inputs.json
 python main.py workflow export browser-form
 ```
@@ -53,5 +54,7 @@ python main.py resume
 ```
 
 التوقف يُفحص بين الخطوات ولا يلغي ما تنفذ. لو ظهر فشل أو مهلة، راجع حالة البرنامج قبل إعادة المحاولة. لو تم تعديل المهمة بعد جدولتها، راجع التعديل وحدّث تسجيل المهمة في المجدول.
+
+راجع [دليل الاسترجاع](operations/RUNBOOK_AR.md) لمعرفة طريقة إلغاء محاولة واحدة، وقراءة سجل الخطوات، والتحقق من حداثة المخرجات.
 
 أدوات التحكم تعرض النصوص والصور للوكيل الطالب. اتبع سياسة جهة العمل عند استخدام نموذج سحابي مع بيانات داخلية.

@@ -1,14 +1,11 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
-import hashlib
 import inspect
-import json
-import math
 import os
 from pathlib import Path
 import platform
-import shutil
+import stat
 import subprocess
 import sys
 import time
@@ -18,8 +15,12 @@ from .agents import Agents, command_prefix, read_transcript
 from .cdp import Browser
 from .common import AutomationError, Journal, ROOT, RunLock, data_directory
 from .desktop import Desktop
+from .files import inspect_file
 from .scheduler import Scheduler
+from .validation import check_schema
 from .workflows import Workflows
+
+UNLOCKED_CONTROLS = {"system_stop", "system_resume", "workflow_cancel", "agent_stop", "recording_stop"}
 
 
 @dataclass
@@ -41,9 +42,9 @@ def schema_for(handler):
     required=[]
     arrays={"files","keys","pids","weekdays","arguments"}
     objects={"params","window","selector","variables","definition"}
-    numbers={"timeout","x","y","to_x","to_y","seconds","stable_seconds"}
+    numbers={"timeout","x","y","to_x","to_y","seconds","stable_seconds","newer_than"}
     integers={"port","count","cursor","limit","modifiers","delta"}
-    booleans={"headless","clear","capture_text","screenshots","allow_keyboard","parameterize_inputs","save"}
+    booleans={"headless","clear","capture_text","screenshots","allow_keyboard","parameterize_inputs","save","with_sha256"}
     for name,param in signature.parameters.items():
         if param.kind in {inspect.Parameter.VAR_KEYWORD,inspect.Parameter.VAR_POSITIONAL}:
             continue
@@ -71,36 +72,6 @@ def schema_for(handler):
     return {"type":"object","properties":properties,"required":required,"additionalProperties":False}
 
 
-def check_schema(value,schema,path="arguments"):
-    if "anyOf" in schema:
-        for option in schema["anyOf"]:
-            try:
-                check_schema(value,option,path)
-                return
-            except AutomationError:
-                pass
-        raise AutomationError(path+" does not match an accepted type.")
-    types={"object":dict,"array":list,"string":str,"number":(int,float),"integer":int,"boolean":bool}
-    kind=schema.get("type")
-    if kind and (not isinstance(value,types[kind]) or kind in {"number","integer"} and isinstance(value,bool)):
-        raise AutomationError(path+" must be "+kind)
-    if kind in {"number","integer"} and isinstance(value,float) and not math.isfinite(value):
-        raise AutomationError(path+" must be finite")
-    if kind=="object":
-        for key in schema.get("required",[]):
-            if key not in value:
-                raise AutomationError(path+" missing "+key)
-        props=schema.get("properties",{})
-        if schema.get("additionalProperties") is False:
-            unknown=set(value)-set(props)
-            if unknown:
-                raise AutomationError("Unknown argument(s): "+", ".join(sorted(unknown)))
-        for key,child in value.items():
-            if key in props:
-                check_schema(child,props[key],path+"."+key)
-    if kind=="array" and "items" in schema:
-        for child in value:
-            check_schema(child,schema["items"],path+"[]")
 
 
 class Engine:
@@ -124,8 +95,8 @@ class Engine:
     def _register(self):
         methods=[
             ("system_status","Detect OS, CPU, Python and bridge availability. Does not start recording.",self.status,False),
-            ("system_stop","Set the persistent emergency stop flag. Current OS calls cannot be undone.",self.stop,False),
-            ("system_resume","Clear the emergency stop flag after inspecting the device.",self.resume,False),
+            ("system_stop","Set the persistent emergency stop flag. Current OS calls cannot be undone.",self.stop,True),
+            ("system_resume","Clear the emergency stop flag after inspecting the device.",self.resume,True),
             ("system_launch","Launch an installed executable with a literal argument array; no shell interpolation.",self.launch,True),
             ("browser_connect","Connect explicitly to a loopback Chrome CDP endpoint.",self.browser.connect,True),
             ("browser_launch","Start installed Chrome with a dedicated automation profile and local debugging port.",self.browser.launch,True),
@@ -140,7 +111,7 @@ class Engine:
             ("browser_scroll","Scroll the top-frame viewport.",self.browser.scroll,True),
             ("browser_screenshot","Return the viewport as an MCP image. It may contain private on-screen information.",self.browser.screenshot,False),
             ("browser_evaluate","Run explicitly supplied JavaScript in a page or selected frame; may change page state.",self.browser.evaluate,True),
-            ("browser_wait","Wait for a unique selector or a JavaScript condition.",self.browser.wait,False),
+            ("browser_wait","Wait for a unique selector or a trusted JavaScript condition. Expressions can change page state.",self.browser.wait,True),
             ("browser_upload","Set a file input to explicit local files.",self.browser.upload,True),
             ("browser_downloads","Set a local download directory and enable progress events.",self.browser.downloads,True),
             ("browser_events","Read buffered CDP notifications. Enable desired domains with browser_cdp first.",self.browser.events,False),
@@ -154,19 +125,23 @@ class Engine:
             ("desktop_keys","Send a chord such as [CTRL,S] to an optional exact window.",self.desktop_keys,True),
             ("desktop_mouse","Use physical screenshot coordinates: move, click, right_click, double_click, drag, wheel.",self.desktop_mouse,True),
             ("recording_start","Start visible desktop recording for explicitly selected PIDs. Text and screenshots default off.",self.recording_start,True),
-            ("recording_stop","Stop the owned desktop recording and save the encrypted session.",self.recording_stop,False),
+            ("recording_stop","Stop the owned desktop recording and save the encrypted session.",self.recording_stop,True),
             ("recording_status","Read the current desktop recorder state.",self.recording_status,False),
             ("agent_probe","Detect installed Claude, Codex, Cline, agy and configured custom CLI profiles.",self.agents.probe,False),
             ("agent_start","Start a managed non-interactive CLI task and capture its visible conversation. Uses the CLI's own login and permissions.",self.agents.start,True),
             ("agent_read","Poll a managed CLI conversation using its returned cursor.",self.agents.read,False),
             ("agent_list","List CLI sessions owned by this server instance.",self.agents.list,False),
-            ("agent_stop","Stop an owned CLI process tree.",self.agents.stop,False),
+            ("agent_stop","Stop an owned CLI process tree.",self.agents.stop,True),
             ("transcript_read","Read an explicitly chosen saved conversation file; never scans credential directories.",read_transcript,False),
             ("workflow_save","Validate and save a deterministic workflow; variables use ${name} or ${env:NAME}.",self.workflows.save,True),
             ("workflow_list","List saved deterministic workflows.",self.workflows.list,False),
+            ("workflow_plan","Inspect a saved workflow's input requirements, blockers and possible write steps without running it.",self.workflows.plan,False),
             ("workflow_run","Run a saved workflow with checks, variables, branching, loops, bounded retries and an exclusive device lock.",self.workflows.run,True),
             ("workflow_start","Start a long workflow in the background so MCP requests do not need to wait. Poll workflow_status.",self.workflows.start,True),
             ("workflow_status","Read the status and result of an owned background workflow job.",self.workflows.status,False),
+            ("workflow_cancel","Request cancellation of one owned background job at a checked boundary.",self.workflows.cancel,True),
+            ("workflow_history","List persisted workflow run receipts, optionally by workflow name.",self.workflows.history.list,False),
+            ("workflow_run_info","Read one run receipt and its step metadata using a sequence cursor.",self.workflows.history.info,False),
             ("workflow_record_start","Record this agent's subsequent tool calls as a reusable workflow. Input values are parameterized by default.",self.workflows.record_start,True),
             ("workflow_record_stop","Save the agent action recording as an editable workflow definition.",self.workflows.record_stop,True),
             ("workflow_import_recording","Convert an encrypted desktop recording to a workflow. Unsupported actions remain explicit manual barriers.",self.workflows.import_recording,True),
@@ -175,7 +150,8 @@ class Engine:
             ("schedule_create","Register or replace an own-folder Windows scheduled task, pinned to the workflow digest. Times use the Windows local time zone.",self.scheduler.create,True),
             ("schedule_list","List only FullAutomation Windows scheduled tasks.",self.scheduler.list,False),
             ("schedule_remove","Remove one named FullAutomation scheduled task.",self.scheduler.remove,True),
-            ("file_wait","Wait until a specific output file exists and its size and modification time stop changing.",self.file_wait,False),
+            ("file_inspect","Read output file existence, size, modification time and optional SHA-256.",inspect_file,False),
+            ("file_wait","Wait for a stable regular file. Use newer_than (Unix seconds) to reject an older output.",self.file_wait,False),
         ]
         for method in methods:
             self.add(*method)
@@ -188,11 +164,12 @@ class Engine:
         args={} if args is None else args
         tool=self.tools[name]
         check_schema(args,tool.schema)
-        if tool.mutates:
+        device_write = tool.mutates and name not in UNLOCKED_CONTROLS
+        if device_write:
             self.check_stop()
         started=time.monotonic()
         try:
-            if tool.mutates and name!="workflow_start":
+            if device_write and name!="workflow_start":
                 with self.run_lock:
                     result=tool.handler(**args)
             else:
@@ -245,7 +222,7 @@ class Engine:
     def recording_stop(self): return self.desktop.call("record_stop")
     def recording_status(self): return self.desktop.call("record_status")
 
-    def file_wait(self,path,timeout=60,stable_seconds=1):
+    def file_wait(self,path,timeout=60,stable_seconds=1,newer_than=None):
         if not 0<timeout<=120 or not 0<=stable_seconds<=timeout:
             raise AutomationError("Invalid file wait duration.")
         file=Path(path).expanduser().resolve()
@@ -255,10 +232,16 @@ class Engine:
         while time.monotonic()<deadline:
             self.check_stop()
             try:
-                stat=file.stat()
-                current=(stat.st_size,stat.st_mtime_ns)
+                info=file.stat()
+                if not stat.S_ISREG(info.st_mode):
+                    raise AutomationError("Expected a regular file.")
+                if newer_than is not None and info.st_mtime <= newer_than:
+                    previous=None
+                    time.sleep(0.1)
+                    continue
+                current=(info.st_size,info.st_mtime_ns,info.st_ino,info.st_dev)
                 if current==previous and time.monotonic()-since>=stable_seconds:
-                    return {"path":str(file),"bytes":stat.st_size,"stable":True}
+                    return {"path":str(file),"bytes":info.st_size,"modified_at":info.st_mtime,"stable":True}
                 if current!=previous:
                     previous=current
                     since=time.monotonic()

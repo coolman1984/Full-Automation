@@ -38,11 +38,7 @@ class Scheduler:
         days=weekdays or ["Monday"]
         if not isinstance(days,list) or not days or any(d not in {"Monday","Tuesday","Wednesday","Thursday","Friday","Saturday","Sunday"} for d in days):
             raise AutomationError("Use full English weekday names.")
-        if not isinstance(variables or {},dict):
-            raise AutomationError("Schedule variables must be an object.")
-        missing=[x for x in definition.get("required_inputs",[]) if x not in (variables or {})]
-        if missing:
-            raise AutomationError("Schedule is missing required inputs: "+", ".join(missing))
+        self.engine.workflows.require_ready(definition, variables)
         # Keep a failed replacement from changing the inputs of an existing task.
         variables_revision=digest(variables or {})[:16]
         variables_file=self.engine.data/"schedules"/(name+".variables-"+variables_revision+".json")

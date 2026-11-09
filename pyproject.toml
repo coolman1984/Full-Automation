@@ -1,6 +1,6 @@
 [project]
 name = "full-automation"
-version = "0.2.0"
+version = "0.3.0"
 description = "Local Windows and Chrome automation tools for agent CLIs"
 requires-python = ">=3.10"
 dependencies = []

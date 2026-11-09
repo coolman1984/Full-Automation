@@ -44,6 +44,7 @@ def main(argv=None):
     worksub=workflow.add_subparsers(dest="action",required=True)
     save=worksub.add_parser("save");save.add_argument("file")
     run=worksub.add_parser("run");run.add_argument("name");run.add_argument("--variables",default="{}");run.add_argument("--variables-file");run.add_argument("--expected-sha256")
+    plan=worksub.add_parser("plan");plan.add_argument("name");plan.add_argument("--variables",default="{}");plan.add_argument("--variables-file")
     export=worksub.add_parser("export");export.add_argument("name")
     agent=sub.add_parser("agent")
     agent.add_argument("name");agent.add_argument("prompt");agent.add_argument("--cwd",default=str(Path.cwd()));agent.add_argument("--model");agent.add_argument("--timeout",type=int,default=1800)
@@ -72,7 +73,11 @@ def main(argv=None):
                 elif args.action=="export": result=engine.workflows.export(args.name)
                 else:
                     variables=read_json(Path(args.variables_file)) if args.variables_file else json.loads(args.variables)
-                    result=engine.call("workflow_run",{"name":args.name,"variables":variables,**({"expected_sha256":args.expected_sha256} if args.expected_sha256 else {})})
+                    tool = "workflow_plan" if args.action == "plan" else "workflow_run"
+                    values = {"name": args.name, "variables": variables}
+                    if args.action == "run" and args.expected_sha256:
+                        values["expected_sha256"] = args.expected_sha256
+                    result = engine.call(tool, values)
             else:
                 values={"agent":args.name,"prompt":args.prompt,"cwd":args.cwd,"timeout":args.timeout}
                 if args.model: values["model"]=args.model

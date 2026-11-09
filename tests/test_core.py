@@ -52,8 +52,58 @@ class EngineTest(unittest.TestCase):
         self.assertFalse(self.calls)
 
     def test_manual_step_fails_not_silently_skipped(self):
+        definition = self.recipe([{"tool":"echo","args":{"value":1}}, {"tool":"manual"}])
+        self.engine.workflows.save(definition)
+        self.assertFalse(self.engine.call("workflow_plan", {"name": "test"})["ready"])
         with self.assertRaisesRegex(AutomationError,"Manual step"):
-            self.engine.workflows.run_definition(self.recipe([{"tool":"manual"},{"tool":"echo","args":{"value":1}}]))
+            self.engine.workflows.run_definition(definition)
+        with self.assertRaisesRegex(AutomationError,"Manual step"):
+            self.engine.scheduler.preview("morning", "test")
+        self.assertFalse(self.calls)
+
+    def test_workflow_rejects_bad_later_args_before_any_write(self):
+        definition = self.recipe([{"tool":"echo","args":{"value":1}}, {"tool":"browser_click","args":{"target_id":"x"}}])
+        with self.assertRaisesRegex(AutomationError, "missing selector"):
+            self.engine.workflows.run_definition(definition)
+        self.assertFalse(self.calls)
+
+    def test_run_history_persists_retry_and_failure_without_payloads(self):
+        def flaky(value):
+            self.calls.append(value)
+            if len(self.calls) == 1:
+                raise AutomationError("synthetic failure")
+            return {"value": value}
+        self.engine.add("flaky", "test retry", flaky, True)
+        recipe = self.recipe([
+            {"tool":"flaky","args":{"value":"private output"},"idempotent":True,"retries":1},
+            {"tool":"assert","args":{"actual":False,"label":"private condition"}},
+        ])
+        with self.assertRaises(AutomationError):
+            self.engine.workflows.run_definition(recipe)
+        with Engine(self.data) as fresh:
+            run, = fresh.call("workflow_history", {"name": "test"})
+            page = fresh.call("workflow_run_info", {"run_id": run["run_id"], "limit": 1})
+            next_page = fresh.call("workflow_run_info", {"run_id": run["run_id"], "cursor": page["next_cursor"]})
+        self.assertEqual(run["status"], "failed")
+        self.assertTrue(page["has_more"])
+        self.assertEqual(page["steps"][0]["attempts"], 2)
+        self.assertEqual(next_page["steps"][0]["status"], "failed")
+        self.assertNotIn("private", json.dumps([page, next_page]))
+
+    def test_cancel_only_owned_workflow_and_persists_cancelled_status(self):
+        self.engine.workflows.save(self.recipe([{"tool":"wait","args":{"seconds":20}},
+                                               {"tool":"echo","args":{"value":"too late"}}]))
+        job_id = self.engine.call("workflow_start", {"name":"test"})["job_id"]
+        self.assertTrue(self.engine.call("workflow_cancel", {"job_id":job_id})["cancellation_requested"])
+        deadline = time.monotonic() + 3
+        while time.monotonic() < deadline:
+            job = self.engine.call("workflow_status", {"job_id":job_id})
+            if job["status"] in {"failed", "cancelled", "completed"}:
+                break
+            time.sleep(0.02)
+        self.assertEqual(job["status"], "cancelled")
+        self.assertEqual(self.engine.call("workflow_run_info", {"run_id":job_id})["run"]["status"], "cancelled")
+        self.assertFalse(self.engine.status()["emergency_stop"])
         self.assertFalse(self.calls)
 
     def test_digest_change_rejects_scheduled_recipe(self):
@@ -160,6 +210,19 @@ class EngineTest(unittest.TestCase):
         output=self.data/"file.txt";output.write_text("complete")
         result=self.engine.file_wait(str(output),timeout=2,stable_seconds=0.1)
         self.assertTrue(result["stable"])
+
+    def test_file_evidence_rejects_stale_output_and_verifies_new_hash(self):
+        output = self.data / "output.txt"
+        self.assertFalse(self.engine.call("file_inspect", {"path": str(output)})["exists"])
+        output.write_text("old")
+        old = self.engine.call("file_inspect", {"path": str(output), "with_sha256": True})
+        with self.assertRaises(AutomationError):
+            self.engine.call("file_wait", {"path":str(output), "newer_than":old["modified_at"], "timeout":0.15, "stable_seconds":0})
+        output.write_text("new")
+        os.utime(output, (old["modified_at"] + 2, old["modified_at"] + 2))
+        self.assertTrue(self.engine.call("file_wait", {"path":str(output), "newer_than":old["modified_at"], "timeout":1, "stable_seconds":0})["stable"])
+        new = self.engine.call("file_inspect", {"path": str(output), "with_sha256": True})
+        self.assertNotEqual(old["sha256"], new["sha256"])
 
 
 class CommonTest(unittest.TestCase):

@@ -16,7 +16,7 @@ You are the reasoning agent. Full Automation is your local tool layer. The reque
 2. Perform the authorized task through browser and desktop tools. Inspect outcomes. Use `browser_wait`, `file_wait` and explicit checks rather than timing guesses.
 3. Stop with `workflow_record_stop`. Review the returned JSON. Typed values become required inputs by default; runtime tab IDs are replaced with references or required inputs.
 4. Edit with `workflow_save`: add assertions, replace dates/file names with variables, remove incidental actions only when you understand them, and keep unresolved steps as `manual`.
-5. Test the saved workflow on a copy or fixture with different inputs. Use `workflow_run` for short work and `workflow_start` + `workflow_status` for long work. Keep the MCP connection alive for background jobs.
+5. Use `workflow_plan` to resolve blockers and see possible writes. Test on a copy or fixture with different inputs. Use `workflow_run` for short work and `workflow_start` + `workflow_status` for long work. Keep the MCP connection alive for background jobs.
 6. Export using `workflow_export`; this produces inspectable Python source with the definition embedded. No model call is needed to replay deterministic actions.
 7. When the user has specified the schedule, use `schedule_preview`, then `schedule_create` within that authorization. Dates and times are the Windows machine's local time zone. The registered job checks the workflow digest; editing the workflow requires updating the registered job.
 
@@ -33,6 +33,8 @@ For a human demonstration, use `recording_start` with explicit PIDs, then `recor
 ## Recovery and limits
 
 - A timeout means an effect may have happened. Inspect before retrying.
+- Use `workflow_cancel` for an owned background job. Inspect its terminal state and the durable receipt using `workflow_run_info`. Use `workflow_history` after reconnecting.
+- For a file output, record the prior modification time and use `file_wait` with `newer_than`. Verify the content or hash when freshness alone is insufficient.
 - `system_stop` is persistent and checked at tool/workflow boundaries; an already issued OS operation cannot be undone. Use `system_resume` only when resuming is intended.
 - Do not schedule desktop interaction into a locked/session-0 desktop. Do not bypass UAC, DRM, authentication or organizational controls.
 - Browser and desktop screenshots can contain sensitive data and are returned to the calling model. Avoid capturing unrelated applications.

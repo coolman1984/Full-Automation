@@ -7,6 +7,9 @@
 | Agent integration | MCP stdio handshake, discovery and tool calls were exercised locally. Conversation capture was tested with a real subprocess emitting fixture data. Live authenticated runs of the four vendor CLIs need their installations and accounts. |
 | Windows recorder and control | The Windows executables were compiled. `tests/Windows-Smoke.ps1` checks window discovery, inspection and screenshots in a real interactive Windows session. Native control, password-protected app behavior and locked-screen behavior need target-device validation. |
 | Windows scheduling | Schedule definition generation, path handling and workflow digest validation were tested. Task registration and execution need Windows. |
+| Preflight and history | Regression checks cover an early write followed by a manual barrier, a malformed later action, history surviving a new engine, retry counts, and cancellation without the global stop. |
+| Output freshness | A stale file is rejected with a prior timestamp. A newer stable file is accepted and its content hash can be compared. |
+| Documentation | A local check compares the generated tool catalog with registered tools, validates project skill metadata and mirrors, and checks relative links. |
 
 The project's automation interface exposes actions and screen context to a reasoning agent. It can operate ordinary accessible apps and pages. Apps may expose only partial text, and protected desktops, policies, native dialogs, ambiguous targets and visual-only controls can require manual input. The tool descriptions and failures distinguish those cases.
 
@@ -14,6 +17,7 @@ The project's automation interface exposes actions and screen context to a reaso
 
 ```powershell
 python -m unittest discover -s tests -v
+python scripts/docs_check.py --check
 $env:CHROME_TEST_PATH = 'C:\Program Files\Google\Chrome\Application\chrome.exe'
 python -m unittest discover -s tests -v
 .\scripts\Build-Windows.ps1 -Test
