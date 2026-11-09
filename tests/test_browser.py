@@ -60,11 +60,14 @@ class BrowserTest(unittest.TestCase):
         if os.name!="nt" and os.geteuid()==0:command.insert(1,"--no-sandbox")
         cls.process=subprocess.Popen(command,stdout=subprocess.DEVNULL,stderr=subprocess.DEVNULL)
         cls.browser=Browser(cls.folder,f"http://127.0.0.1:{cls.port}")
-        for _ in range(100):
+        # A cold CI runner can take well over ten seconds to open the debugging port.
+        deadline=time.monotonic()+45
+        while True:
             if cls.process.poll() is not None:raise RuntimeError("Test Chrome exited before starting")
             try:cls.browser.tabs();break
-            except OSError:time.sleep(0.1)
-        else:raise RuntimeError("Test Chrome never became ready")
+            except OSError:
+                if time.monotonic()>deadline:raise RuntimeError("Test Chrome never became ready within 45 seconds")
+                time.sleep(0.1)
 
     @classmethod
     def tearDownClass(cls):
