@@ -251,6 +251,29 @@ class EngineTest(unittest.TestCase):
             steps=self.engine.workflows.import_recording("unused.wos","shortcuts")["definition"]["steps"]
         self.assertEqual(steps[0],{"tool":"desktop_keys","args":{"keys":["CTRL","S"],"window":{"title":"Report - Notepad","path":"C:\\Windows\\notepad.exe"}}})
         self.assertEqual([s["tool"] for s in steps],["desktop_keys","manual","manual","manual","desktop_keys"])
+        field={**target,"Id":"amount","Name":"Amount"}
+        session={"Steps":[{"Kind":"key","Value":"Return","Target":field,"Replayable":False,"Description":"Enter"},
+                          {"Kind":"key","Value":"Delete","Target":target,"Replayable":False,"Description":"Delete"}]}
+        with patch.object(self.engine.desktop,"call",return_value=session):
+            steps=self.engine.workflows.import_recording("unused.wos","control-keys")["definition"]["steps"]
+        self.assertEqual(steps[0]["tool"],"desktop_action")
+        self.assertEqual((steps[0]["args"]["action"],steps[0]["args"]["selector"]["id"]),("focus","amount"))
+        self.assertEqual(steps[1]["args"]["keys"],["Return"])
+        self.assertEqual(steps[2]["tool"],"manual",
+                         "a control key without a control locator could act on the wrong control")
+
+    def test_recorded_input_names_never_shadow_result_aliases(self):
+        self.engine.workflows.record_start("aliases")
+        self.engine.workflows.capture("browser_new_tab",{},{"targetId":"t1"})
+        self.engine.workflows.capture("browser_fill",{"target_id":"t1","selector":"#tab_1","text":"x"},{})
+        self.engine.workflows.capture("browser_fill",{"target_id":"t1","selector":"#tab_3","text":"y"},{})
+        self.engine.workflows.capture("browser_new_tab",{},{"targetId":"t2"})
+        definition=self.engine.workflows.record_stop()["definition"]
+        aliases=[s["save_as"] for s in definition["steps"] if "save_as" in s]
+        self.assertFalse(set(aliases)&set(definition["required_inputs"]),(aliases,definition["required_inputs"]))
+        from full_automation.demo import convert
+        demo,_,_=convert("demo","about:blank","http://127.0.0.1:9222",[{"kind":"fill","selector":"#tab","name":"tab","value":"v","time":1}])
+        self.assertNotIn("tab",demo["required_inputs"])
 
     def test_unknown_tool_and_arguments_fail(self):
         with self.assertRaises(AutomationError): self.engine.call("does_not_exist")

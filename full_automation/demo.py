@@ -141,10 +141,10 @@ SCRIPT = r"""(() => {
    reported = a;
    if (!reachable) send({kind: 'frame_focus', ...describe(a), src: a.getAttribute('src')});
  };
- if (window === top) {
-  addEventListener('blur', () => setTimeout(checkFocus, 0));
-  setInterval(() => { if (active) checkFocus(); }, 400);
- }
+ // Every reachable document checks its own focused frame, so a cross-origin frame nested in a
+ // same-origin one is reported by the outer frame's script.
+ addEventListener('blur', () => setTimeout(checkFocus, 0));
+ setInterval(() => { if (active) checkFocus(); }, 400);
  const mount = () => {
   if (window !== top || !active || (badgeHost && badgeHost.isConnected) || !document.documentElement) return;
   badgeHost = document.createElement('full-automation-recording');
@@ -358,7 +358,7 @@ def convert(name, start_url, endpoint, events):
     steps = [{"tool": "browser_new_tab", "save_as": "tab"}]
     if start_url and start_url != "about:blank":
         steps.append({"tool": "browser_navigate", "args": {"target_id": tab, "url": start_url}})
-    required, examples, used, notes = [], {}, set(), []
+    required, examples, used, notes = [], {}, {"tab"}, []  # "tab" is the result alias of the first step
     environment = []
     last_action = None
     previous = None  # (kind, selector, step) of the last emitted action

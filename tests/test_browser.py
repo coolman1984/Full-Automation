@@ -143,6 +143,25 @@ class BrowserTest(unittest.TestCase):
         with self.assertRaisesRegex(AutomationError,"cross-origin"):
             self.browser.click(self.target,"#frame-button",frame=["#remote"])
 
+    def test_demonstration_reports_cross_origin_frame_nested_in_same_origin_frame(self):
+        with Engine(self.folder/"nested-demo") as engine:
+            engine.browser.connect(f"http://127.0.0.1:{self.port}")
+            engine.browser.wait(self.target,selector="#frame-input",frame=["#frame"])
+            other=self.url.replace("127.0.0.1","localhost")+"/frame"
+            engine.browser.evaluate(self.target,"(()=>{const d=document.querySelector('#frame').contentDocument;const f=d.createElement('iframe');f.id='inner';f.style.cssText='width:200px;height:80px';f.src="+json.dumps(other)+";d.body.prepend(f);return new Promise(r=>f.onload=()=>r(true))})()")
+            engine.call("browser_demo_start",{"target_id":self.target,"name":"nested"})
+            engine.browser.click(self.target,"#frame-button",frame=["#frame"])
+            box=engine.browser.evaluate(self.target,"(()=>{const o=document.querySelector('#frame'),r=o.getBoundingClientRect(),i=o.contentDocument.querySelector('#inner').getBoundingClientRect();return {x:r.x+o.clientLeft+i.x+i.width/2,y:r.y+o.clientTop+i.y+i.height/2}})()")
+            for kind in ("mousePressed","mouseReleased"):
+                engine.browser.call("Input.dispatchMouseEvent",{"type":kind,"button":"left","clickCount":1,**box},self.target)
+            deadline=time.monotonic()+3
+            while time.monotonic()<deadline and not any(e["kind"]=="frame_focus" for e in engine.call("browser_demo_read",{})["events"]):
+                time.sleep(0.1)
+            result=engine.call("browser_demo_stop",{"save":False})
+            manual=[s for s in result["definition"]["steps"] if s["tool"]=="manual"]
+            self.assertEqual(len(manual),1,json.dumps(result["definition"]["steps"]))
+            self.assertIn("cross-origin",manual[0]["description"])
+
     def test_recorded_browser_workflow_replays(self):
         with Engine(self.folder/"workflow-data") as engine:
             engine.browser.connect(f"http://127.0.0.1:{self.port}")

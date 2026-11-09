@@ -216,7 +216,21 @@ def shortcut_step(step, target):
     if not CHORD.fullmatch(chord) or upper.startswith("WIN+") or "+WIN+" in upper or upper in UNSAFE_CHORDS:
         reason = "it uses the clipboard, Windows key or switches windows" if chord else "the key was not recorded"
         return {"tool":"manual","description":(step.get("Description") or "Keyboard shortcut")+" — not replayed because "+reason+"."}
-    return {"tool":"desktop_keys","args":{"keys":chord.split("+"),"window":{"title":target["Window"],"path":target["AppPath"]}}}
+    keys = chord.split("+")
+    window = {"title":target["Window"],"path":target["AppPath"]}
+    if target.get("Id") or target.get("Name"):
+        # Put keyboard focus back on the control the person used before pressing the key.
+        return [{"tool":"desktop_action","args":{"selector":desktop_selector(target),"action":"focus"}},
+                {"tool":"desktop_keys","args":{"keys":keys,"window":window}}]
+    if not any(k.upper() in {"CTRL","ALT"} for k in keys[:-1]):
+        # Enter, Delete, arrows and similar act on whatever control has focus; without a locator that is a guess.
+        return {"tool":"manual","description":(step.get("Description") or "Key")+" — not replayed because the focused control has no stable identifier."}
+    return {"tool":"desktop_keys","args":{"keys":keys,"window":window}}
+
+
+def desktop_selector(target):
+    return {"window":{"title":target["Window"],"path":target["AppPath"]},"id":target["Id"],"name":target["Name"],
+            "class_name":target["Class"],"control_type":target["ControlType"],"parent_id":target["ParentId"]}
 
 
 def walk_steps(steps, prefix=""):
@@ -490,22 +504,30 @@ class Workflows:
                 params["target_id"]=self.aliases[target]
             else:
                 name="target_"+str(len(required)+1)
+                while name in self._reserved():
+                    name+="_id"
                 required.append(name)
                 params["target_id"]="${"+name+"}"
                 self.aliases[target]=params["target_id"]
         if self.parameterize:
             for key in ("text","value"):
                 if key in params:
-                    name=input_name(params.get("selector"),required,"input_"+str(len(required)+1))
+                    name=input_name(params.get("selector"),self._reserved(),"input_"+str(len(required)+1))
                     required.append(name)
                     self.examples[name]=params[key]
                     params[key]="${"+name+"}"
         step={"tool":tool,"args":params}
         if tool=="browser_new_tab" and isinstance(result,dict) and "targetId" in result:
             name="tab_"+str(len(self.recording["steps"])+1)
+            while name in self._reserved():
+                name+="_tab"
             step["save_as"]=name
             self.aliases[result["targetId"]]="${"+name+".targetId}"
         self.recording["steps"].append(step)
+
+    def _reserved(self):
+        """Input names and result aliases share one namespace in a workflow context."""
+        return set(self.recording["required_inputs"])|{step["save_as"] for step in self.recording["steps"] if "save_as" in step}
 
     def record_stop(self):
         if self.recording is None:
@@ -523,12 +545,13 @@ class Workflows:
         for step in recorded["Steps"]:
             target=step.get("Target")
             if step.get("Kind")=="key" and target:
-                definition["steps"].append(shortcut_step(step,target))
+                converted=shortcut_step(step,target)
+                definition["steps"].extend(converted if isinstance(converted,list) else [converted])
                 continue
             if not step.get("Replayable") or not target:
                 definition["steps"].append({"tool":"manual","description":step.get("Description","Unrecognized action")})
                 continue
-            selector={"window":{"title":target["Window"],"path":target["AppPath"]},"id":target["Id"],"name":target["Name"],"class_name":target["Class"],"control_type":target["ControlType"],"parent_id":target["ParentId"]}
+            selector=desktop_selector(target)
             if step["Kind"]=="click":
                 action="invoke" if step["Pattern"]=="invoke" else "select"
                 definition["steps"].append({"tool":"desktop_action","args":{"selector":selector,"action":action}})
