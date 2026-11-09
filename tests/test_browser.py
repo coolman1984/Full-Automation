@@ -132,7 +132,7 @@ class BrowserTest(unittest.TestCase):
             engine.call("browser_click",{"target_id":tab,"selector":"#go"})
             recorded=engine.workflows.record_stop()
             with Engine(engine.data) as fresh:
-                result=fresh.workflows.run("demo",{"input_1":"replayed"})
+                result=fresh.workflows.run("demo",{"name":"replayed"})
                 replayed=result["outputs"]["tab_1"]["targetId"]
                 self.assertNotEqual(tab,replayed)
                 self.assertEqual(fresh.browser.evaluate(replayed,"document.querySelector('#result').textContent"),"replayed")

@@ -15,7 +15,7 @@ You are the reasoning agent. Full Automation is your local tool layer. The reque
 
 1. Start `workflow_record_start` with a meaningful name. Prefer starting the recording before creating a new tab; its returned target ID will be turned into an output reference automatically.
 2. Perform the authorized task through browser and desktop tools. Inspect outcomes. Use `browser_wait`, `file_wait` and explicit checks rather than timing guesses.
-3. Stop with `workflow_record_stop`. Review the returned JSON. Typed values become required inputs by default; runtime tab IDs are replaced with references or required inputs.
+3. Stop with `workflow_record_stop`. Review the returned JSON. Typed values become required inputs named after their fields, and `example_inputs` returns the values used, for a test replay only; runtime tab IDs are replaced with references or required inputs.
 4. Edit with `workflow_save`: add assertions, replace dates/file names with variables, remove incidental actions only when you understand them, and keep unresolved steps as `manual`.
 5. Use `workflow_plan` to resolve blockers and see possible writes. Test on a copy or fixture with different inputs. Use `workflow_run` for short work and `workflow_start` + `workflow_status` for long work. Keep the MCP connection alive for background jobs.
 6. Export using `workflow_export`; this produces inspectable Python source with the definition embedded. No model call is needed to replay deterministic actions.

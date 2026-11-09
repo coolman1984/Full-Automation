@@ -56,6 +56,25 @@ class RunHistory:
         with self.database() as db:
             return [dict(row) for row in db.execute(query+' ORDER BY started_at DESC, run_id LIMIT ?', (*args, limit))]
 
+    def prune(self, older_than_days, name=None):
+        """Explicit retention: delete finished receipts older than the given age. Running receipts are kept."""
+        if isinstance(older_than_days, bool) or not isinstance(older_than_days, (int, float)) or not 1 <= older_than_days <= 3650:
+            raise AutomationError('older_than_days must be between 1 and 3650.')
+        cutoff = time.time() - older_than_days * 86400
+        query = "SELECT run_id FROM runs WHERE status != 'running' AND started_at < ?"
+        args = [cutoff]
+        if name is not None:
+            query += ' AND name=?'
+            args.append(slug(name))
+        with self.database() as db:
+            ids = [row['run_id'] for row in db.execute(query, args)]
+            for start in range(0, len(ids), 500):
+                chunk = ids[start:start + 500]
+                marks = ','.join('?' * len(chunk))
+                db.execute(f'DELETE FROM steps WHERE run_id IN ({marks})', chunk)
+                db.execute(f'DELETE FROM runs WHERE run_id IN ({marks})', chunk)
+        return {'deleted_runs': len(ids), 'older_than_days': older_than_days}
+
     def info(self, run_id, cursor=0, limit=100):
         if (isinstance(cursor, bool) or not isinstance(cursor, int) or cursor < 0 or
                 isinstance(limit, bool) or not isinstance(limit, int) or not 1 <= limit <= 500):

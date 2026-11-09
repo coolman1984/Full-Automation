@@ -260,6 +260,8 @@ namespace WorkObserver
                 step.Kind="key";
                 step.Description="مفتاح: " + (raw.Ctrl?"Ctrl+":"") + (raw.Alt?"Alt+":"") +
                     (raw.Shift?"Shift+":"") + (raw.Win?"Win+":"") + ((Keys)raw.Key).ToString() + " — خطوة يدوية";
+                // Key names in the bridge's format, so an import can replay the chord in the same window.
+                step.Value=(raw.Ctrl?"CTRL+":"") + (raw.Alt?"ALT+":"") + (raw.Shift?"SHIFT+":"") + (raw.Win?"WIN+":"") + ((Keys)raw.Key).ToString();
             }
             else step.Description=raw.Kind=="scroll" ? "تمرير الشاشة؛ خطوة يدوية." : "ضغط بالزر الأيمن؛ خطوة يدوية.";
             Add(step);
