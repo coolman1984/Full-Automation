@@ -147,6 +147,8 @@ class CDPConnection:
         self.ws = WebSocket(url)
         self.counter = 0
         self.events = deque(maxlen=2000)
+        # method -> callable(message) returning True when it consumed the notification.
+        self.listeners = {}
         self.lock = threading.RLock()
 
     def call(self, method, params=None, timeout=20, session_id=None):
@@ -174,7 +176,9 @@ class CDPConnection:
                             raise AutomationError("CDP: " + str(response["error"]))
                         return response.get("result", {})
                     if "method" in response:
-                        self.events.append(response)
+                        listener = self.listeners.get(response["method"])
+                        if listener is None or not listener(response):
+                            self.events.append(response)
             except (OSError, ValueError) as exc:
                 raise AutomationError("CDP transport failed; inspect state before retrying: " + str(exc)) from exc
 
