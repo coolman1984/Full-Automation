@@ -1,5 +1,16 @@
 param([switch]$Test)
 $ErrorActionPreference = 'Stop'
+# The compiler and UI Automation references belong to .NET Framework. PowerShell 7 runs on .NET
+# (Core), which has neither, so hand the build to Windows PowerShell 5.1.
+if ($PSVersionTable.PSEdition -eq 'Core') {
+    $legacy = Join-Path $env:SystemRoot 'System32\WindowsPowerShell\v1.0\powershell.exe'
+    if (-not (Test-Path -LiteralPath $legacy)) { throw 'Windows PowerShell 5.1 is required to build the Windows components.' }
+    $forward = @('-NoProfile', '-File', $PSCommandPath)
+    if ($Test) { $forward += '-Test' }
+    & $legacy @forward
+    if ($LASTEXITCODE -ne 0) { throw 'Windows component build failed.' }
+    return
+}
 $root = Split-Path $PSScriptRoot -Parent
 $framework = [Runtime.InteropServices.RuntimeEnvironment]::GetRuntimeDirectory()
 $compiler = Join-Path $framework 'csc.exe'

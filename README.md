@@ -79,6 +79,12 @@ python main.py tools
 python main.py integrations
 ```
 
+End-to-end demo on test fixtures (headless Chrome plus a throw-away Windows form) with an HTML report:
+
+```text
+Showcase.cmd
+```
+
 تشغيل مسجل العمل الأول:
 
 ```text

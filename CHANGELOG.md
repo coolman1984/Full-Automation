@@ -2,6 +2,13 @@
 
 ## غير منشور
 
+- `Showcase.cmd` / `scripts/showcase.py`: a one-click end-to-end demo over MCP stdio on fixtures only (local page, throw-away Windows form). It records an agent session in headless Chrome, adds assertions, blocks a run with missing inputs, replays with new inputs, exports Python, then fills and presses a native form through UI Automation. Writes an HTML report with screenshots.
+- Setup picks a healthy Python: `scripts/Find-Python.ps1` skips broken installs (for example one that prints "Could not find platform independent libraries" and takes its prefix from the current folder) instead of trusting `py -3`. Used by Setup, Connect-Claude, Connect-Codex and the Windows smoke test.
+- `Build-Windows.ps1` works from PowerShell 7: it hands the build to Windows PowerShell 5.1, which has the .NET Framework compiler and UI Automation assemblies.
+- Cline is detected: npm shims that point at an extension-less bin script (`node_modules\cline\bin\cline`) resolve to node plus that script, when its shebang names node and it stays inside the npm folder.
+- Agent probing runs in parallel with a 45 s limit and no console window; Cline needs about 28 s to print its version behind a corporate proxy.
+- `browser_navigate` passes its own timeout to `Page.navigate` instead of a fixed 20 s, so a cold first page load no longer fails early.
+
 - الضغط والكتابة والاختيار والانتظار ورفع الملفات داخل الإطارات الداخلية من نفس الموقع. مراقبة شغلك بتسجل اللي بتعمله جوه الإطار كخطوات. الإطار من موقع تاني بيترفض بوضوح بدل التخمين، وشغلك جواه بيظهر كخطوة يدوية بدل ما يضيع.
 - مقارنات أكتر في التحقق والشروط: لا يساوي، لا يحتوي، نمط نصي، أكبر من، وأصغر من (حتى لو الرقم مكتوب بفواصل زي ١٬٢٥٠).
 - إعادة المحاولة بتستنى وقت بيزيد بين كل محاولة والتانية، والإيقاف والإلغاء بيفضلوا شغالين.

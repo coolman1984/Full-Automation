@@ -11,5 +11,9 @@
 | حقل مقارنة مكتوب خطأ ينجّح التحقق بدون حق | ارفض أي حقل غير معروف في التحقق والشرط عند الحفظ | [اختبار حقول الشرط](../../tests/test_core.py) |
 | سكربت المستند الجديد وربط CDP لا يصلان للصفحة بعد التنقل | فعّل نطاقي الصفحة والتشغيل قبل الحقن والربط | [اختبار عرض كروم](../../tests/test_browser.py) |
 | أي دالة يضيفها ربط CDP ظاهرة لكود الصفحة | اسم عشوائي، والسكربت ياخد الدالة ويمسحها من الصفحة، ونعتمد على معرّف سياق الصفحة الرئيسية | [اختبار التزييف](../../tests/test_browser.py) |
+| `py -3` can return a broken Python whose prefix is the current folder | Probe each candidate from a neutral folder and require `Lib\os.py` under its base prefix | [Find-Python.ps1](../../scripts/Find-Python.ps1) |
+| Windows PowerShell 5.1 strips double quotes from native arguments and turns native stderr into a terminating error under `Stop` | No double quotes in inline Python; relax the error preference around native probes | [Find-Python.ps1](../../scripts/Find-Python.ps1) |
+| npm shims may point at an extension-less bin script | Accept it only when the shebang names node and the path stays inside the npm folder | [Shim test](../../tests/test_core.py) |
+| The first `Page.navigate` on a cold Chrome exceeded the fixed 20 s transport limit | The navigation timeout governs the CDP call too | [Browser tests](../../tests/test_browser.py) |
 
 أضف الملاحظة والقرار والاختبار الذي يعيد إنتاجها. سجّل المشاكل المتوقعة التي ما اتجرّبتش في [خطة الفجوات](../ROADMAP_AR.md).

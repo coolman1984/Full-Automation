@@ -526,6 +526,23 @@ class AgentTest(unittest.TestCase):
             self.assertEqual(result["next_cursor"],len(first.encode()))
             self.assertEqual(len(result["events"]),1)
 
+    @unittest.skipUnless(os.name=="nt","npm batch shims are a Windows feature")
+    def test_npm_shim_with_extensionless_bin_script(self):
+        from full_automation.agents import command_prefix
+        with tempfile.TemporaryDirectory() as temp:
+            folder=Path(temp)
+            script=folder/"node_modules"/"tool"/"bin"/"tool";script.parent.mkdir(parents=True)
+            shim=folder/"tool.cmd"
+            body='@ECHO off\r\nSETLOCAL\r\nSET dp0=%~dp0\r\n"%_prog%"  "%dp0%\\node_modules\\tool\\bin\\tool" %*\r\n'
+            shim.write_text(body)
+            (folder/"node.exe").write_bytes(b"")
+            script.write_text("echo not node\n")
+            with self.assertRaises(AutomationError): command_prefix(str(shim))
+            script.write_text("#!/usr/bin/env node\nconsole.log(1)\n")
+            self.assertEqual(command_prefix(str(shim)),[str((folder/"node.exe").resolve()),str(script.resolve())])
+            shim.write_text(body.replace("node_modules\\tool\\bin\\tool","node_modules\\..\\..\\outside"))
+            with self.assertRaises(AutomationError): command_prefix(str(shim))
+
     def test_credential_file_rejected(self):
         with tempfile.TemporaryDirectory() as temp:
             path=Path(temp)/"auth.json";path.write_text('{}')

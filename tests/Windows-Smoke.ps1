@@ -1,8 +1,7 @@
 param([Parameter(Mandatory=$true)][string]$WindowTitle)
 $ErrorActionPreference = 'Stop'
 $root = Split-Path $PSScriptRoot -Parent
-if (Get-Command py.exe -ErrorAction SilentlyContinue) { $python = (& py.exe -3 -c 'import sys; print(sys.executable)').Trim() }
-else { $python = (Get-Command python.exe).Source }
+$python = & (Join-Path $root 'scripts\Find-Python.ps1')
 $temporary = Join-Path ([IO.Path]::GetTempPath()) ('full-automation-smoke-' + [Guid]::NewGuid().ToString('N'))
 New-Item -ItemType Directory -Path $temporary | Out-Null
 try {

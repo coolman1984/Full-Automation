@@ -360,7 +360,10 @@ class Browser:
         return response.get("result",{}).get("value")
 
     def navigate(self,target_id,url,timeout=30):
-        result=self.call("Page.navigate",{"url":url},target_id)
+        if isinstance(timeout,bool) or not isinstance(timeout,(int,float)) or not 0<timeout<=120:
+            raise AutomationError("Timeout must be in (0, 120].")
+        # Page.navigate returns only after the response starts; a cold browser can exceed the default 20 s.
+        result=self.call("Page.navigate",{"url":url},target_id,timeout=timeout)
         if result.get("errorText"):
             raise AutomationError(result["errorText"])
         # readyState may still refer to the old document immediately after navigation.

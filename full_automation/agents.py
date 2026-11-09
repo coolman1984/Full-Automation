@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 from collections import deque
+from concurrent.futures import ThreadPoolExecutor
 import json
 import os
 from pathlib import Path
@@ -24,6 +25,18 @@ BUILTINS = {
 }
 
 
+def _is_node_script(script: Path) -> bool:
+    """A JS file, or an extension-less file whose shebang names node."""
+    if script.suffix.lower() in {".js", ".mjs", ".cjs"}:
+        return True
+    try:
+        with script.open("rb") as handle:
+            first = handle.readline(256)
+    except OSError:
+        return False
+    return first.startswith(b"#!") and b"node" in first
+
+
 def command_prefix(command: str) -> list[str]:
     path = shutil.which(command) or (command if Path(command).is_file() else None)
     if not path:
@@ -33,12 +46,16 @@ def command_prefix(command: str) -> list[str]:
         # Resolve npm shims directly into node + JS. Do not interpolate prompts in cmd.exe.
         contents = Path(path).read_text(encoding="utf-8-sig", errors="replace")[:32768]
         match = re.search(r"(?:%~dp0|%dp0%)[\\/]?([^\"\r\n]+?\.(?:m?js))", contents, re.I)
+        if not match:
+            # npm also emits shims for extension-less bin scripts, e.g. node_modules\cline\bin\cline.
+            match = re.search(r"\"(?:%~dp0|%dp0%)[\\/]?(node_modules[\\/][^\"\r\n%*]+)\"", contents, re.I)
         if match:
-            script = Path(path).parent / match.group(1).replace("\\", "/")
-            local_node = Path(path).parent / "node.exe"
+            folder = Path(path).parent.resolve()
+            script = (folder / match.group(1).replace("\\", "/")).resolve()
+            local_node = folder / "node.exe"
             node = str(local_node) if local_node.is_file() else shutil.which("node")
-            if node and script.is_file():
-                return [node, str(script.resolve())]
+            if node and script.is_file() and script.is_relative_to(folder) and _is_node_script(script):
+                return [node, str(script)]
         raise AutomationError("Cannot safely launch this batch wrapper. Configure its native executable or node script explicitly.")
     return [path]
 
@@ -166,16 +183,25 @@ class Agents:
             self.profiles.update(overrides)
         self.sessions={}
 
+    PROBE_TIMEOUT=45
+
     def probe(self):
-        result=[]
-        for name,profile in self.profiles.items():
+        # Some CLIs (Cline behind a corporate proxy: ~28 s) are slow to print a version, so the
+        # profiles are probed in parallel with a generous limit instead of serially at 10 s each.
+        def one(name,profile):
             try:
                 prefix=command_prefix(profile["command"])
-                info=subprocess.run(prefix+["--version"],capture_output=True,text=True,encoding="utf-8",errors="replace",timeout=10)
-                result.append({"agent":name,"available":info.returncode==0,"command":prefix,"version":redact((info.stdout+info.stderr)[:1500]),"configured_args":profile.get("args",[])})
-            except (OSError,ValueError,KeyError,subprocess.TimeoutExpired,AutomationError) as exc:
-                result.append({"agent":name,"available":False,"error":str(exc)})
-        return result
+                flags=subprocess.CREATE_NO_WINDOW if os.name=="nt" else 0
+                info=subprocess.run(prefix+["--version"],capture_output=True,text=True,encoding="utf-8",errors="replace",
+                                    timeout=self.PROBE_TIMEOUT,stdin=subprocess.DEVNULL,creationflags=flags)
+                return {"agent":name,"available":info.returncode==0,"command":prefix,"version":redact((info.stdout+info.stderr)[:1500]),"configured_args":profile.get("args",[])}
+            except (OSError,ValueError,KeyError,TypeError,subprocess.TimeoutExpired,AutomationError) as exc:
+                return {"agent":name,"available":False,"error":str(exc)}
+        items=list(self.profiles.items())
+        if not items:
+            return []
+        with ThreadPoolExecutor(max_workers=min(8,len(items))) as pool:
+            return list(pool.map(lambda item: one(*item),items))
 
     def start(self,agent,prompt,cwd,timeout=1800,model=None):
         if agent not in self.profiles:
