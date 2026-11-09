@@ -9,6 +9,7 @@
 | Windows scheduling | Schedule definition generation, path handling and workflow digest validation were tested. Task registration and execution need Windows. |
 | Preflight and history | Regression checks cover an early write followed by a manual barrier, a malformed later action, history surviving a new engine, retry counts, and cancellation without the global stop. |
 | Output freshness | A stale file is rejected with a prior timestamp. A newer stable file is accepted and its content hash can be compared. |
+| Continuous integration | [GitHub Actions](../.github/workflows/ci.yml) runs the documentation check and all tests with real Chrome on Linux (Python 3.10 and 3.13), and on Windows compiles the bridge and recorder, runs the recorder's non-interactive self-test and the unit tests. It does not exercise native UI control, recording or Task Scheduler. |
 | Documentation | A local check compares the generated tool catalog with registered tools, validates project skill metadata and mirrors, and checks relative links. |
 
 The project's automation interface exposes actions and screen context to a reasoning agent. It can operate ordinary accessible apps and pages. Apps may expose only partial text, and protected desktops, policies, native dialogs, ambiguous targets and visual-only controls can require manual input. The tool descriptions and failures distinguish those cases.

@@ -1,0 +1,53 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  linux:
+    name: Python ${{ matrix.python }} + Chrome (Linux)
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    strategy:
+      fail-fast: false
+      matrix:
+        python: ["3.10", "3.13"]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: ${{ matrix.python }}
+      - name: Documentation and tool catalog
+        run: python scripts/docs_check.py --check
+      - name: Unit and real-Chrome integration tests
+        run: |
+          export CHROME_TEST_PATH="$(command -v google-chrome)"
+          "$CHROME_TEST_PATH" --version
+          python -m unittest discover -s tests -v
+
+  windows:
+    name: Windows build, self-test and unit tests
+    runs-on: windows-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.13"
+      # Compiles the bridge and recorder and runs the recorder's non-interactive self-test.
+      # Native UI control and Task Scheduler still need an interactive Windows session.
+      - name: Build Windows executables and self-test
+        shell: powershell
+        run: .\scripts\Build-Windows.ps1 -Test
+      - name: Unit tests
+        run: python -m unittest discover -s tests -v
