@@ -27,7 +27,8 @@ DEMO='''<!doctype html><html><head><meta charset="utf-8"><title>Demo form</title
 <button id="send" onclick="location.href='/demo-done?c='+encodeURIComponent(customer.value)+'&b='+branch.value+'&u='+urgent.checked">Send</button>
 <script>document.querySelector('#host').attachShadow({mode:'open'}).innerHTML='<button class="inner" onclick="this.textContent=1">Inner</button>'</script></body></html>'''.encode()
 DONE='''<!doctype html><html><head><meta charset="utf-8"><title>Done</title></head><body><p id="summary"></p>
-<button id="confirm" onclick="const q=new URLSearchParams(location.search);summary.textContent='تم: '+q.get('c')+' / '+q.get('b')+' / '+q.get('u')">Confirm</button></body></html>'''.encode()
+<button id="confirm" onclick="if(!confirm('Send?'))return;const q=new URLSearchParams(location.search);summary.textContent='تم: '+q.get('c')+' / '+q.get('b')+' / '+q.get('u')">Confirm</button>
+<button id="ask" onclick="summary.textContent='prompt: '+prompt('Your name?')">Ask</button></body></html>'''.encode()
 
 class Handler(BaseHTTPRequestHandler):
     def do_GET(self):
@@ -155,7 +156,10 @@ class BrowserTest(unittest.TestCase):
             engine.browser.wait(tab,selector="#confirm")
             live=engine.call("browser_demo_read",{})
             self.assertEqual([e["kind"] for e in live["events"]][:6],["fill","fill","click","select","click","click"])
+            engine.browser.dialogs(tab,"accept")
             engine.browser.click(tab,"#confirm")
+            self.assertIn("تم:",engine.browser.evaluate(tab,"summary.textContent"))
+            engine.browser.dialogs(tab,"off")
             result=engine.call("browser_demo_stop",{})
             self.assertFalse(engine.browser.evaluate(tab,"!!document.querySelector('full-automation-recording')"))
             text=json.dumps(result,ensure_ascii=False)
@@ -166,6 +170,8 @@ class BrowserTest(unittest.TestCase):
             tools=[step["tool"] for step in definition["steps"]]
             self.assertNotIn("manual",tools)
             self.assertEqual(tools.count("browser_navigate"),1, "a click-caused navigation is not replayed separately")
+            confirm_click=next(i for i,s in enumerate(definition["steps"]) if s["tool"]=="browser_click" and s["args"]["selector"]=="#confirm")
+            self.assertIn({"tool":"browser_dialogs","args":{"target_id":"${tab.targetId}","action":"accept"}},definition["steps"][confirm_click-2:confirm_click])
             self.assertIn("${env:FA_PIN}",text)
             # The agent adds the business assertion, as the notes require, then replays with new inputs.
             definition["steps"]+=[{"tool":"browser_snapshot","args":{"target_id":"${tab.targetId}"},"save_as":"page"},
@@ -188,5 +194,41 @@ class BrowserTest(unittest.TestCase):
             self.assertFalse(engine.browser.evaluate(self.target,"!!document.querySelector('full-automation-recording')"))
             engine.call("browser_demo_start",{"target_id":self.target,"name":"reset"})
             self.assertEqual(engine.call("browser_demo_stop",{"save":False})["events"],0)
+
+    def test_dialog_policy_accepts_dismisses_and_answers_prompt(self):
+        with Engine(self.folder/"dialog-data") as engine:
+            engine.browser.connect(f"http://127.0.0.1:{self.port}")
+            tab=engine.call("browser_new_tab",{})["targetId"]
+            engine.call("browser_navigate",{"target_id":tab,"url":self.url+"/demo-done?c=x&b=y&u=z"})
+            engine.call("browser_dialogs",{"target_id":tab,"action":"dismiss"})
+            engine.call("browser_click",{"target_id":tab,"selector":"#confirm"})
+            self.assertEqual(engine.browser.evaluate(tab,"summary.textContent"),"")
+            engine.call("browser_dialogs",{"target_id":tab,"action":"accept","prompt_text":"سارة"})
+            engine.call("browser_click",{"target_id":tab,"selector":"#ask"})
+            self.assertEqual(engine.browser.evaluate(tab,"summary.textContent"),"prompt: سارة")
+            recent=engine.call("browser_dialogs",{"target_id":tab,"action":"off"})["recent"]
+            self.assertEqual([(d["type"],d["message"],d["handled"]) for d in recent],[("confirm","Send?","dismiss"),("prompt","Your name?","accept")])
+            engine.browser.call("Target.closeTarget",{"targetId":tab})
+
+    def test_page_cannot_forge_or_stop_a_demonstration(self):
+        with Engine(self.folder/"forge-data") as engine:
+            engine.browser.connect(f"http://127.0.0.1:{self.port}")
+            engine.call("browser_demo_start",{"target_id":self.target,"name":"forge"})
+            hostile="""(()=>{let hits=0;for(const k of Object.getOwnPropertyNames(window)){const v=window[k];
+              try{if(typeof v==='function'&&k.startsWith('__'))
+                {v(JSON.stringify({kind:'load',url:'https://evil.example/',time:Date.now()+1e9}));hits++}
+              if(k.startsWith('__')&&v&&typeof v.stop==='function'){v.stop();v.stop(undefined);try{v.stop=()=>0}catch(e){};try{delete window[k]}catch(e){}}}catch(e){}}return hits})()"""
+            self.assertEqual(engine.browser.evaluate(self.target,hostile),0)
+            # A frame that existed before recording still holds the binding; its calls must not count as top-page steps.
+            in_frame=hostile.replace("Object.getOwnPropertyNames(window)","Object.getOwnPropertyNames(frames[0])").replace("window[k]","frames[0][k]")
+            self.assertGreaterEqual(engine.browser.evaluate(self.target,in_frame),1)
+            forged=engine.call("browser_demo_read",{})["events"]
+            self.assertTrue(forged and all(e.get("frame") for e in forged))
+            self.assertTrue(engine.browser.evaluate(self.target,"!!document.querySelector('full-automation-recording')"))
+            engine.browser.click(self.target,"#go")
+            result=engine.call("browser_demo_stop",{"save":False})
+            text=json.dumps(result)
+            self.assertNotIn("evil.example",text)
+            self.assertTrue(any(s["tool"]=="browser_click" and s["args"]["selector"]=="#go" for s in result["definition"]["steps"]))
 
 if __name__=="__main__":unittest.main()
