@@ -41,6 +41,7 @@ class Tool:
 PARAMETER_HELP = {
     "target_id": "Chrome tab ID from browser_tabs or browser_new_tab (targetId).",
     "selector": "Unique CSS selector. For open shadow roots pass a list: host selector first, then the inner selector.",
+    "frame": "Same-origin iframe selectors from the top document inward, such as [\"#checkout\"]; omit for the top document.",
     "frame_id": "Frame ID from browser_snapshot frame_tree; omit for the top document.",
     "endpoint": "Loopback CDP URL with port, such as http://127.0.0.1:9222.",
     "url": "Address to open.",
@@ -82,7 +83,7 @@ def schema_for(handler):
     signature=inspect.signature(handler)
     properties={}
     required=[]
-    arrays={"files","keys","pids","weekdays","arguments"}
+    arrays={"files","keys","pids","weekdays","arguments","frame"}
     objects={"params","window","selector","variables","definition"}
     numbers={"timeout","x","y","to_x","to_y","seconds","stable_seconds","newer_than","older_than_days"}
     integers={"port","count","cursor","limit","modifiers","delta"}
@@ -149,8 +150,8 @@ class Engine:
             ("browser_new_tab","Create a Chrome tab. Save targetId for subsequent actions.",self.browser.new_tab,True),
             ("browser_navigate","Navigate a tab and wait for document readiness.",self.browser.navigate,True),
             ("browser_snapshot","Read visible text and unique CSS selectors, including open shadow roots. frame_id reads a specific frame.",self.browser.snapshot,False),
-            ("browser_click","Click one unique visible CSS selector with trusted CDP mouse input; top frame or open shadow roots.",self.browser.click,True),
-            ("browser_fill","Replace an editable field and verify its value. Password values are not returned.",self.browser.fill,True),
+            ("browser_click","Click one unique visible CSS selector with trusted CDP mouse input, in the top document, open shadow roots or a same-origin frame (frame).",self.browser.click,True),
+            ("browser_fill","Replace an editable field and verify its value, also inside a same-origin frame (frame). Password values are not returned.",self.browser.fill,True),
             ("browser_key","Send a key; modifier mask: Alt=1 Ctrl=2 Meta=4 Shift=8.",self.browser.key,True),
             ("browser_select","Choose a native select option by value.",self.browser.select,True),
             ("browser_scroll","Scroll the top-frame viewport.",self.browser.scroll,True),

@@ -26,7 +26,7 @@ SCRIPT = r"""(() => {
  let active = true;
  const send = (event) => {
   if (!active) return;
-  try { deliver(JSON.stringify({...event, time: Date.now(), frame: window !== top, url: location.href})); } catch (e) {}
+  try { deliver(JSON.stringify({...event, time: Date.now(), frame: window !== top, frame_path: framePath(), url: location.href})); } catch (e) {}
  };
  const unique = (root, sel) => { try { return root.querySelectorAll(sel).length === 1; } catch (e) { return false; } };
  const quote = (v) => '"' + String(v).replace(/["\\]/g, '\\$&') + '"';
@@ -59,6 +59,21 @@ SCRIPT = r"""(() => {
    node = root instanceof ShadowRoot ? root.host : null;
   }
   return parts.length === 1 ? parts[0] : parts;
+ };
+ // iframe selectors from the top document inward; null when a frame cannot be addressed by selector.
+ const framePath = () => {
+  if (window === top) return [];
+  const path = []; let w = window;
+  try {
+   while (w !== top) {
+    const owner = w.frameElement;
+    if (!owner) return null;
+    const s = selectorFor(owner);
+    if (typeof s !== 'string') return null;
+    path.unshift(s); w = w.parent;
+   }
+  } catch (e) { return null; }
+  return path;
  };
  const labelOf = (el) => String(el.getAttribute('aria-label') || (el.labels && el.labels[0] && el.labels[0].innerText) ||
   el.getAttribute('placeholder') || el.innerText || el.getAttribute('name') || el.id || '').trim().slice(0, 120);
@@ -111,6 +126,22 @@ SCRIPT = r"""(() => {
   send({kind: 'key', key: e.key, modifiers: (e.altKey ? 1 : 0) | (e.ctrlKey ? 2 : 0) | (e.metaKey ? 4 : 0) | (e.shiftKey ? 8 : 0),
    ...(target ? describe(target) : {})});
  }, true);
+ if (window === top) {
+  // Focus moved into a frame this page cannot see into: record that it happened instead of missing it.
+  // Moving between two frames fires no blur here, so the focused element is also checked periodically.
+  let reported = null;
+  const checkFocus = () => {
+   const a = document.activeElement;
+   if (!a || !a.matches('iframe,frame')) { reported = null; return; }
+   if (a === reported) return;
+   let reachable = false;
+   try { reachable = !!a.contentDocument; } catch (e) {}
+   reported = a;
+   if (!reachable) send({kind: 'frame_focus', ...describe(a), src: a.getAttribute('src')});
+  };
+  addEventListener('blur', () => setTimeout(checkFocus, 0));
+  setInterval(() => { if (active) checkFocus(); }, 400);
+ }
  const mount = () => {
   if (window !== top || !active || (badgeHost && badgeHost.isConnected) || !document.documentElement) return;
   badgeHost = document.createElement('full-automation-recording');
@@ -158,14 +189,20 @@ class BrowserDemo:
         connection = self.browser._connection(target_id)
         events = []
         secret = new_secrets()
-        main_contexts = set()
-        main_frame = {}
+        trusted = set()
+        existing = {}
+        armed = {"on": False}
 
         def context_created(message):
+            # Page contexts created after the script is registered run it before any page script,
+            # so the binding is already private there. Older contexts are trusted once injected.
             context = message.get("params", {}).get("context", {})
             aux = context.get("auxData") or {}
-            if aux.get("isDefault") and aux.get("frameId") == main_frame.get("id"):
-                main_contexts.add(context.get("id"))
+            if aux.get("isDefault"):
+                if armed["on"]:
+                    trusted.add(context.get("id"))
+                else:
+                    existing[context.get("id")] = aux.get("frameId")
             return False
 
         def sink(message):
@@ -178,9 +215,9 @@ class BrowserDemo:
                 except ValueError:
                     return True
                 if isinstance(value, dict):
-                    # Only the main frame's own page context speaks for the top document.
-                    if params.get("executionContextId") not in main_contexts:
+                    if params.get("executionContextId") not in trusted:
                         value["frame"] = True
+                        value["frame_path"] = None
                     events.append(value)
             return True
 
@@ -193,7 +230,7 @@ class BrowserDemo:
 
         script_id = None
         try:
-            main_frame["id"] = self.browser.call("Page.getFrameTree", {}, target_id)["frameTree"]["frame"]["id"]
+            main_frame = self.browser.call("Page.getFrameTree", {}, target_id)["frameTree"]["frame"]["id"]
             connection.listeners["Runtime.executionContextCreated"] = context_created
             connection.listeners["Runtime.bindingCalled"] = sink
             connection.listeners["Page.javascriptDialogClosed"] = dialog_closed
@@ -204,7 +241,18 @@ class BrowserDemo:
             self.browser.call("Runtime.addBinding", {"name": secret["binding"]}, target_id)
             script_id = self.browser.call("Page.addScriptToEvaluateOnNewDocument",
                                           {"source": page_script(True, secret)}, target_id)["identifier"]
+            armed["on"] = True
             page = self.browser.evaluate(target_id, page_script(False, secret) + ";({url:location.href,title:document.title})")
+            for context_id, frame_id in list(existing.items()):
+                if frame_id == main_frame:
+                    trusted.add(context_id)
+                    continue
+                try:
+                    response = self.browser.call("Runtime.evaluate", {"expression": page_script(False, secret), "contextId": context_id}, target_id)
+                    if "exceptionDetails" not in response:
+                        trusted.add(context_id)
+                except AutomationError:
+                    pass  # A frame that went away or refused the script stays untrusted.
         except Exception:
             self._detach(connection)
             self._cleanup(target_id, script_id, secret)
@@ -324,10 +372,19 @@ def convert(name, start_url, endpoint, events):
         kind = event.get("kind")
         selector = event.get("selector")
         label = event.get("label") or event.get("tag") or "element"
-        if event.get("frame"):
-            if kind != "load":
-                manual(f"Demonstrated {kind} on '{label}' inside a frame ({event.get('url')}). Replace with a frame-aware step.")
+        frame_path = event.get("frame_path") if event.get("frame") else None
+        if kind == "frame_focus":
+            manual(f"The person worked inside the cross-origin frame '{label or event.get('src')}' ({event.get('src')}). "
+                   "Its actions are not visible to this page; automate that site in its own tab or add steps by hand.")
+            previous = None
             continue
+        if event.get("frame"):
+            if kind == "load":
+                continue
+            if not (isinstance(frame_path, list) and frame_path and all(isinstance(f, str) for f in frame_path)):
+                manual(f"Demonstrated {kind} on '{label}' inside a frame ({event.get('url')}) that cannot be addressed. Add a step by hand.")
+                previous = None
+                continue
         if kind == "dialog":
             args = {"target_id": tab, "action": "accept" if event.get("accepted") else "dismiss"}
             if event.get("accepted") and event.get("user_input"):
@@ -355,7 +412,8 @@ def convert(name, start_url, endpoint, events):
             manual(f"Demonstrated {kind} on '{label}', but no unique selector exists. Inspect the page and add a step.")
             previous = None
             continue
-        same = previous is not None and previous[1] == selector
+        where = json.dumps([selector, frame_path], ensure_ascii=False)
+        same = previous is not None and previous[1] == where
         if event.get("trusted") is False and kind in {"fill", "select", "upload"}:
             untrusted.append(f"{kind} '{label}'")
         start_index = len(steps)
@@ -368,7 +426,7 @@ def convert(name, start_url, endpoint, events):
         elif kind == "double_click":
             if same and previous[0] == "click":
                 previous[2]["args"]["count"] = 2
-                previous = ("double_click", selector, previous[2])
+                previous = ("double_click", where, previous[2])
                 continue
             wait(selector)
             step = {"tool": "browser_click", "args": {"target_id": tab, "selector": selector, "count": 2}}
@@ -413,7 +471,11 @@ def convert(name, start_url, endpoint, events):
         else:
             continue
         steps.append(step)
-        previous = (kind, selector, step)
+        if frame_path:
+            for added in steps[start_index:]:
+                if added["tool"] in {"browser_wait", "browser_click", "browser_fill", "browser_select", "browser_upload"}:
+                    added["args"]["frame"] = frame_path
+        previous = (kind, where, step)
         previous_start = start_index
 
     if untrusted:
