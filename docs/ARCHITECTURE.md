@@ -34,7 +34,7 @@ Restart the client or reload its MCP servers. Confirm `system_status` appears be
 
 ## Managed CLI profiles
 
-Put user-defined profiles in `agents.json` in the data directory. The executable is resolved as a literal path or from `PATH`. Arguments are passed as an array and `{prompt}` is replaced as one argument. Use headless or print-mode flags for the particular CLI. The program reads stdout and stderr as UTF-8. JSONL events are normalized into visible messages and event summaries. Text output is also accepted.
+Inside the herdr repository, `../config/generated/hands-agents.json` (generated from `config/registry.json`) is read first; an entry `{"disabled": true}` removes a built-in profile. Put user-defined profiles in `agents.json` in the data directory; it is read last and wins. The executable is resolved as a literal path or from `PATH`. Arguments are passed as an array and `{prompt}` is replaced as one argument. Use headless or print-mode flags for the particular CLI. The program reads stdout and stderr as UTF-8. JSONL events are normalized into visible messages and event summaries. Text output is also accepted.
 
 ```json
 {
