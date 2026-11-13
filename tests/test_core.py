@@ -548,6 +548,28 @@ class AgentTest(unittest.TestCase):
             path=Path(temp)/"auth.json";path.write_text('{}')
             with self.assertRaises(AutomationError): read_transcript(str(path))
 
+    def test_disabled_profile_removes_builtin_and_refuses_mixed_entry(self):
+        with tempfile.TemporaryDirectory() as temp:
+            folder=Path(temp)
+            atomic_json(folder/"agents.json",{"claude":{"disabled":True},"codex":{"command":"codex","args":["exec","{prompt}"]}})
+            agents=Agents(folder)
+            self.assertNotIn("claude",agents.profiles)
+            self.assertEqual(agents.profiles["codex"]["args"],["exec","{prompt}"])
+            with self.assertRaises(AutomationError):agents.start("claude","hi",str(folder))
+            atomic_json(folder/"agents.json",{"claude":{"disabled":True,"command":"claude"}})
+            with self.assertRaises(AutomationError):Agents(folder)
+
+    def test_repository_profiles_load_before_data_folder(self):
+        with tempfile.TemporaryDirectory() as temp:
+            folder=Path(temp)
+            generated=folder/"hands-agents.json"
+            atomic_json(generated,{"claude":{"disabled":True},"codex":{"command":"codex","args":["gen","{prompt}"]}})
+            atomic_json(folder/"agents.json",{"codex":{"command":"codex","args":["mine","{prompt}"]}})
+            with patch("full_automation.agents.REPO_PROFILES",generated):
+                agents=Agents(folder)
+            self.assertNotIn("claude",agents.profiles)
+            self.assertEqual(agents.profiles["codex"]["args"],["mine","{prompt}"])
+
     def test_managed_process_captures_arabic_and_literal_prompt(self):
         with tempfile.TemporaryDirectory() as temp:
             folder=Path(temp)

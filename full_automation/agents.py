@@ -15,7 +15,11 @@ import threading
 import time
 import uuid
 
-from .common import AutomationError, atomic_json, read_json, redact
+from .common import ROOT, AutomationError, atomic_json, read_json, redact
+
+# Inside the herdr repository, hands/ reads the profiles generated from config/registry.json
+# (`rayyes registry gen`); the data folder's agents.json still overrides them.
+REPO_PROFILES = ROOT.parent/"config"/"generated"/"hands-agents.json"
 
 BUILTINS = {
     "claude": {"command":"claude", "args":["--print","--output-format","stream-json","--verbose","--model","claude-opus-5-5","{prompt}"], "format":"jsonl"},
@@ -175,12 +179,21 @@ class Agents:
     def __init__(self, data: Path):
         self.data=data
         self.profiles={name:dict(profile) for name,profile in BUILTINS.items()}
-        config=data/"agents.json"
-        if config.exists():
+        for config in (REPO_PROFILES,data/"agents.json"):
+            if not config.exists():
+                continue
             overrides=read_json(config)
             if not isinstance(overrides,dict):
-                raise AutomationError("agents.json must contain an object of CLI profiles.")
-            self.profiles.update(overrides)
+                raise AutomationError(f"{config.name} must contain an object of CLI profiles.")
+            for name,profile in overrides.items():
+                # {"disabled": true} removes a profile, built-in included (the generated
+                # config/generated/hands-agents.json uses it for Claude print mode).
+                if isinstance(profile,dict) and profile.get("disabled") is True:
+                    if set(profile)!={"disabled"}:
+                        raise AutomationError("A disabled agent profile must contain only \"disabled\": true.")
+                    self.profiles.pop(name,None)
+                else:
+                    self.profiles[name]=profile
         self.sessions={}
 
     PROBE_TIMEOUT=45
