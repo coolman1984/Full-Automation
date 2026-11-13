@@ -2,6 +2,7 @@
 
 ## غير منشور
 
+- `docs/showcase/run-anatomy.html`: a self-contained, scroll-driven page that dissects one real `browser-form` run recorded over MCP stdio (187.7 ms, six steps), its failed twin (assertion refused at step 6) and the stop and fingerprint refusals. Every figure comes from `runs.sqlite3`, `actions.jsonl` or the MCP replies of that session; it states that the sample is a Linux container and a local fixture page.
 - `Showcase.cmd` / `scripts/showcase.py`: a one-click end-to-end demo over MCP stdio on fixtures only (local page, throw-away Windows form). It records an agent session in headless Chrome, adds assertions, blocks a run with missing inputs, replays with new inputs, exports Python, then fills and presses a native form through UI Automation. Writes an HTML report with screenshots.
 - Setup picks a healthy Python: `scripts/Find-Python.ps1` skips broken installs (for example one that prints "Could not find platform independent libraries" and takes its prefix from the current folder) instead of trusting `py -3`. Used by Setup, Connect-Claude, Connect-Codex and the Windows smoke test.
 - `Build-Windows.ps1` works from PowerShell 7: it hands the build to Windows PowerShell 5.1, which has the .NET Framework compiler and UI Automation assemblies.
